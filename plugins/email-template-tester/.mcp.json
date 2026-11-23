@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "figma-console": {
+      "command": "npx",
+      "args": ["-y", "figma-console-mcp@1.46.0"]
+    },
+    "klaviyo": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/klaviyo.mjs"],
+      "env": {
+        "KLAVIYO_API_KEY": "${user_config.klaviyo_api_key}",
+        "KLAVIYO_TEST_RECIPIENTS": "${user_config.litmus_test_address}"
+      }
+    },
+    "email-build": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/email-build.mjs"]
+    }
+  }
+}

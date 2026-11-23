@@ -1,0 +1,13 @@
+{
+  "name": "email-template-tester",
+  "description": "Claude Code plugins for building and testing marketing emails: Figma to MJML to Klaviyo to Litmus.",
+  "owner": { "name": "prabha-10" },
+  "plugins": [
+    {
+      "name": "email-template-tester",
+      "source": "./plugins/email-template-tester",
+      "description": "Figma → MJML → Klaviyo [TEST] template → Litmus → client handoff, one email at a time, one folder per brand.",
+      "version": "0.3.1"
+    }
+  ]
+}
