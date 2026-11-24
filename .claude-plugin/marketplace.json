@@ -4,10 +4,10 @@
   "owner": { "name": "prabha-10" },
   "plugins": [
     {
-      "name": "email-template-tester",
-      "source": "./plugins/email-template-tester",
-      "description": "Figma → MJML → Klaviyo [TEST] template → Litmus → client handoff, one email at a time, one folder per brand.",
-      "version": "0.3.1"
+      "name": "emailqa",
+      "source": "./plugins/emailqa",
+      "description": "EmailQA: Figma → MJML → local checks → Klaviyo [TEST] template on your test account → Litmus → client handoff. One workspace, one folder per client. Start with /emailqa:start.",
+      "version": "0.4.0"
     }
   ]
 }

@@ -1,0 +1,160 @@
+// Pure-JS image helpers (no sharp, no sips): size, transparency and dark pixels, PNG → JPG.
+
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { PNG } from "pngjs";
+import jpeg from "jpeg-js";
+
+function jpegSize(buf) {
+  let i = 2;
+  while (i < buf.length) {
+    if (buf[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    const marker = buf[i + 1];
+    const len = buf.readUInt16BE(i + 2);
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+export function sniff(buf) {
+  if (buf.length > 24 && buf.toString("ascii", 1, 4) === "PNG") {
+    return { format: "png", width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8) return { format: "jpg", ...(jpegSize(buf) || {}) };
+  if (buf.toString("ascii", 0, 3) === "GIF") return { format: "gif", width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
+  if (buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return { format: "webp" };
+  if (buf.toString("utf8", 0, 200).includes("<svg")) return { format: "svg" };
+  return { format: "unknown" };
+}
+
+const luminance = (r, g, b) => {
+  const c = [r, g, b].map((v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+};
+
+// Transparent PNGs with dark opaque pixels vanish on dark backgrounds (dark mode).
+function pngAnalysis(buf) {
+  const png = PNG.sync.read(buf);
+  const { width, height, data } = png;
+  let transparent = 0;
+  let opaque = 0;
+  let darkOpaque = 0;
+  const step = Math.max(1, Math.floor((width * height) / 250000)); // sample big images
+  for (let p = 0; p < width * height; p += step) {
+    const i = p * 4;
+    const a = data[i + 3];
+    if (a < 16) {
+      transparent++;
+      continue;
+    }
+    if (a > 200) {
+      opaque++;
+      if (luminance(data[i], data[i + 1], data[i + 2]) < 0.08) darkOpaque++;
+    }
+  }
+  const total = transparent + opaque || 1;
+  return {
+    has_transparency: transparent > 0,
+    transparent_share: +(transparent / total).toFixed(3),
+    dark_opaque_share_of_opaque: opaque ? +(darkOpaque / opaque).toFixed(3) : 0,
+  };
+}
+
+export async function imageInfo(file) {
+  const buf = await readFile(file);
+  const info = { file: path.basename(file), bytes: buf.length, kb: +(buf.length / 1024).toFixed(1), ...sniff(buf) };
+  const warnings = [];
+  if (["webp", "svg"].includes(info.format)) warnings.push(`${info.format.toUpperCase()} isn't supported by many email clients; use PNG or JPG.`);
+  if (info.format === "png") {
+    try {
+      Object.assign(info, pngAnalysis(buf));
+      if (info.has_transparency && info.dark_opaque_share_of_opaque > 0.15) {
+        warnings.push(
+          "Transparent PNG with dark pixels: on a dark background (dark mode) the dark parts may disappear. Consider a light outline or a solid background."
+        );
+      }
+      if (!info.has_transparency && buf.length > 150 * 1024) {
+        warnings.push("Large PNG without transparency: a JPG would be much smaller (convert_image).");
+      }
+    } catch (e) {
+      warnings.push(`Couldn't decode the PNG: ${e.message}`);
+    }
+  }
+  if (buf.length > 1024 * 1024) warnings.push("Over 1 MB: slow to load; compress or resize.");
+  return { ...info, warnings };
+}
+
+const hexToRgb = (hex) => {
+  const m = String(hex).match(/^#?([0-9a-f]{6})$/i);
+  if (!m) throw new Error(`Background must be a 6-digit hex color, e.g. #ffffff (got ${hex}).`);
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+
+function decode(buf) {
+  const { format } = sniff(buf);
+  if (format === "png") {
+    const png = PNG.sync.read(buf);
+    return { width: png.width, height: png.height, data: png.data };
+  }
+  if (format === "jpg") {
+    const img = jpeg.decode(buf, { useTArray: true, formatAsRGBA: true });
+    return { width: img.width, height: img.height, data: Buffer.from(img.data) };
+  }
+  throw new Error("Only PNG and JPG files can be cropped.");
+}
+
+function encode(img, dest, quality = 85) {
+  if (/\.jpe?g$/i.test(dest)) return jpeg.encode(img, Math.min(95, Math.max(40, quality))).data;
+  const png = new PNG({ width: img.width, height: img.height });
+  img.data.copy(png.data);
+  return PNG.sync.write(png);
+}
+
+// Cut a region out of a larger capture (e.g. a layer out of its parent frame, so blend modes and
+// whatever sits underneath are kept). x/y/w/h are design pixels relative to the capture's top-left;
+// designWidth is the capture's width in design pixels, so the 2x (or capped) scale is worked out here.
+export async function cropImage(src, dest, { x, y, w, h, designWidth, quality = 85 }) {
+  const img = decode(await readFile(src));
+  const scale = designWidth ? img.width / designWidth : 1;
+  const left = Math.max(0, Math.round(x * scale));
+  const top = Math.max(0, Math.round(y * scale));
+  const width = Math.min(img.width - left, Math.round(w * scale));
+  const height = Math.min(img.height - top, Math.round(h * scale));
+  if (width <= 0 || height <= 0) throw new Error(`The crop area is outside the image (${img.width}x${img.height} px at scale ${scale.toFixed(2)}).`);
+  const out = Buffer.alloc(width * height * 4);
+  for (let row = 0; row < height; row++) {
+    img.data.copy(out, row * width * 4, ((top + row) * img.width + left) * 4, ((top + row) * img.width + left + width) * 4);
+  }
+  const bytes = encode({ width, height, data: out }, dest, quality);
+  await writeFile(dest, bytes);
+  return { width, height, scale: +scale.toFixed(3), bytes: bytes.length };
+}
+
+// PNG → JPG, flattening transparency onto a background color.
+export async function pngToJpg(src, dest, { quality = 82, background = "#ffffff" } = {}) {
+  const buf = await readFile(src);
+  if (sniff(buf).format !== "png") throw new Error("Only PNG files can be converted.");
+  const png = PNG.sync.read(buf);
+  const [br, bg, bb] = hexToRgb(background);
+  const out = Buffer.alloc(png.width * png.height * 4);
+  for (let i = 0; i < png.data.length; i += 4) {
+    const a = png.data[i + 3] / 255;
+    out[i] = Math.round(png.data[i] * a + br * (1 - a));
+    out[i + 1] = Math.round(png.data[i + 1] * a + bg * (1 - a));
+    out[i + 2] = Math.round(png.data[i + 2] * a + bb * (1 - a));
+    out[i + 3] = 255;
+  }
+  const jpg = jpeg.encode({ data: out, width: png.width, height: png.height }, Math.min(95, Math.max(40, quality)));
+  await writeFile(dest, jpg.data);
+  return { from_bytes: buf.length, to_bytes: jpg.data.length, width: png.width, height: png.height };
+}

@@ -1,0 +1,9 @@
+{
+  "name": "emailqa-figma-runtime",
+  "version": "1.46.0",
+  "private": true,
+  "description": "Pinned figma-console-mcp for EmailQA. Setup copies this file and package-lock.json into the plugin's data folder and runs npm ci there.",
+  "dependencies": {
+    "figma-console-mcp": "1.46.0"
+  }
+}

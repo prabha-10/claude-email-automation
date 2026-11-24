@@ -1,0 +1,68 @@
+<mjml lang="en">
+  <!--
+    EmailQA starter. Copy to emails/<email>/email.mjml and replace every REPLACE_ value from the design.
+    Built-in lessons from real Litmus runs: real <h1>, font fallbacks, 44px buttons, iOS address styling,
+    no-wrap for hyphenated words, centred stacked cards on mobile, footer contrast >= 4.5:1.
+    Never put Klaviyo tags inside HTML comments.
+  -->
+  <mj-head>
+    <mj-title>REPLACE_TITLE</mj-title>
+    <mj-preview>REPLACE_PREVIEW_TEXT_90_TO_130_CHARACTERS</mj-preview>
+    <mj-breakpoint width="480px" />
+    <mj-font name="Open Sans" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&amp;display=swap" />
+    <mj-attributes>
+      <mj-all font-family="'Open Sans', Arial, Helvetica, sans-serif" />
+      <mj-text font-size="16px" line-height="24px" color="#222222" padding="0" />
+      <mj-section padding="0" />
+      <mj-column padding="0" />
+      <mj-button inner-padding="10px 24px" line-height="24px" font-size="16px" font-weight="600" border-radius="6px" />
+    </mj-attributes>
+    <mj-style>
+      /* iOS turns addresses, dates and phone numbers into blue underlined links. Keep the design's colour. */
+      a[x-apple-data-detectors] { color: inherit !important; text-decoration: none !important; font-size: inherit !important; font-family: inherit !important; font-weight: inherit !important; line-height: inherit !important; }
+      .footer a[x-apple-data-detectors] { color: #555555 !important; }
+      /* Keep hyphenated words (to-do, e-mail) from breaking across lines in fallback fonts. */
+      .nowrap { white-space: nowrap; }
+      @media only screen and (max-width: 480px) {
+        .h1 h1 { font-size: 30px !important; line-height: 36px !important; }
+        /* Stacked cards: centre everything inside the card, not just the box. */
+        .card-stack div, .card-stack td { text-align: center !important; }
+        .card-stack img { margin: 0 auto !important; }
+      }
+    </mj-style>
+  </mj-head>
+  <mj-body width="600px" background-color="#f4f4f4">
+    <mj-section background-color="#ffffff" padding="24px 32px">
+      <mj-column>
+        <mj-image src="../images/REPLACE_logo.png" alt="REPLACE_BRAND" width="140px" padding="0 0 24px" />
+        <mj-text css-class="h1">
+          <h1 style="margin:0;font-family:'Open Sans', Arial, Helvetica, sans-serif;font-size:36px;line-height:44px;font-weight:700;color:#111111;">REPLACE_HEADLINE</h1>
+        </mj-text>
+        <mj-text padding="16px 0 24px">Hi {{ first_name|default:"there" }}, REPLACE_BODY with a <span class="nowrap">to-do</span> example.</mj-text>
+        <mj-button href="REPLACE_URL" background-color="#111111" color="#ffffff" align="left">REPLACE_CTA</mj-button>
+      </mj-column>
+    </mj-section>
+
+    <mj-section background-color="#ffffff" padding="0 32px 24px" css-class="card-stack">
+      <mj-column padding="0 8px 16px">
+        <mj-image src="../images/REPLACE_card1.jpg" alt="REPLACE_CARD_1" />
+        <mj-text padding="12px 0 0">REPLACE_CARD_1_TEXT</mj-text>
+      </mj-column>
+      <mj-column padding="0 8px 16px">
+        <mj-image src="../images/REPLACE_card2.jpg" alt="REPLACE_CARD_2" />
+        <mj-text padding="12px 0 0">REPLACE_CARD_2_TEXT</mj-text>
+      </mj-column>
+    </mj-section>
+
+    <mj-section padding="24px 32px" css-class="footer">
+      <mj-column>
+        <!-- Footer grey #555555 on #f4f4f4 is 6.9:1; lighter greys often fail WCAG AA (4.5:1). -->
+        <mj-text font-size="12px" line-height="18px" color="#555555" align="center">
+          {{ organization.name }} · {{ organization.full_address }}<br />
+          <a href="{% unsubscribe_link %}" style="color:#555555;text-decoration:underline;">Unsubscribe</a> ·
+          <a href="{% web_view_link %}" style="color:#555555;text-decoration:underline;">View in browser</a>
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

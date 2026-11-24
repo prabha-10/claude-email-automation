@@ -1,0 +1,48 @@
+{
+  "name": "emailqa",
+  "version": "0.4.0",
+  "description": "EmailQA: turn Figma email designs into tested emails, one client folder each. Figma → MJML → pre-checks and local preview → Klaviyo [TEST] template on your test account → Litmus review and fixes → handoff to the client's Klaviyo with the client's own image links. Start with /emailqa:start.",
+  "author": { "name": "prabha-10" },
+  "keywords": ["email", "qa", "mjml", "figma", "klaviyo", "litmus"],
+  "userConfig": {
+    "klaviyo_api_key": {
+      "type": "string",
+      "title": "Klaviyo TEST account private API key",
+      "description": "Private key from your agency's Klaviyo test account (not a client's). Custom access: Images Full, Templates Full, everything else No access.",
+      "sensitive": true,
+      "required": false
+    },
+    "litmus_test_address": {
+      "type": "string",
+      "title": "Litmus test address",
+      "description": "Your ...@litmusemail.com address. Test emails can only go to this address and its +folder variants.",
+      "required": false
+    }
+  },
+  "mcpServers": {
+    "email-build": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/email-build.mjs"],
+      "env": {
+        "EMAILQA_DATA": "${CLAUDE_PLUGIN_DATA}",
+        "LITMUS_TEST_ADDRESS": "${user_config.litmus_test_address}"
+      }
+    },
+    "klaviyo": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/klaviyo.mjs"],
+      "env": {
+        "EMAILQA_DATA": "${CLAUDE_PLUGIN_DATA}",
+        "KLAVIYO_API_KEY": "${user_config.klaviyo_api_key}",
+        "LITMUS_TEST_ADDRESS": "${user_config.litmus_test_address}"
+      }
+    },
+    "figma": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/figma.mjs"],
+      "env": {
+        "EMAILQA_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}
