@@ -12,7 +12,7 @@ Every tool takes `client` and `email`, for example `spring-sale` or `black-frida
 - Run the whole flow without stopping for questions. If the user must act (a login, the Figma bridge) or a tool refuses, stop. Otherwise, keep going.
 - A Litmus round is slow and costs credits, and a guess does not teach anything. Find the cause of a problem before you change the email. The plan step (step 8) makes you do this: `send_test_email` refuses a second round without a fix plan.
 - Each email gets 2 Litmus rounds. Round 1 finds every problem. Round 2 tests the fixes. After `resolve_variants`, one more round is allowed to make sure that the result works. `send_test_email` refuses more unless the user asks for another round.
-- Several emails: run steps 1 to 5 for each email. Then start one `emailqa:litmus-reviewer` agent per email in the same message. The reviews then run at the same time.
+- Several emails: in steps 1 and 2, call `check_emails` once for all the emails, in place of `compile_email` and `precheck_email` for each email. Run the other steps up to step 5 for each email. Then start one `emailqa:litmus-reviewer` agent per email in the same message. The reviews then run at the same time.
 
 ## Rules
 

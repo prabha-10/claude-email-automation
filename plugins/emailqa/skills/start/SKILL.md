@@ -55,7 +55,7 @@ Call `list_emails` for the client. Show the emails in a short table: version, la
 
 Go on with what the user asked for. If the user only ran /emailqa:start:
 
-- If a frame is selected in Figma, build it with the build-email skill.
+- If one or more frames are selected in Figma, build them with the build-email skill.
 - If no frame is selected, ask "What do you want to do?" with these options:
   - "Build a new email from Figma"
   - "Change or rebuild an email"

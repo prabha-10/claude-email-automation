@@ -46,7 +46,7 @@ import { DARK_MODES, simulateDark } from "./lib/dark-sim.mjs";
 // imageInfo here reads a file path; the handoff one fingerprints bytes (format, size, SHA-256).
 import { accountIdOf, imageInfo as fileFingerprint, imageUrlsIn, matchLinks, sha256, swapLinks } from "./lib/handoff.mjs";
 import { checkContrast } from "./lib/contrast.mjs";
-import { ensurePreviewServer, openInBrowser, previewUrls } from "./lib/preview.mjs";
+import { ensurePreviewServer, openInBrowser, overviewUrl, previewUrls } from "./lib/preview.mjs";
 import { summarize } from "./lib/design.mjs";
 import { CLIENT_BEHAVIOR, KINDS, addLessons, loadLessons, matchClientBehavior, matchLessons } from "./lib/lessons.mjs";
 import { checkPlanItems, checkPlanResults, lessonEntries, openProblems, pendingPlan } from "./lib/plans.mjs";
@@ -721,36 +721,37 @@ tool(
 
 // ---------- compile, pre-check, preview ----------
 
+async function compileOne(e) {
+  const src = await within(e.emailDir, "email.mjml").catch(() => {
+    throw new Error(`No email.mjml yet in ${e.emailDir}.`);
+  });
+  const out = path.join(e.emailDir, "build", "email.html");
+  const source = await readFile(src, "utf8");
+  const result = await mjml2html(source, { validationLevel: "soft", filePath: src });
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, result.html);
+  const bytes = Buffer.byteLength(result.html);
+  const errors = (result.errors || []).slice(0, 25).map((x) => x.formattedMessage || x.message);
+  e.record.lastBuild = { at: now(), bytes, mjml_errors: errors.length };
+  await saveRecord(e.recordFile, e.record);
+  const variants = summarizeVariants(source);
+  return {
+    output: path.relative(e.dir, out).split(path.sep).join("/"),
+    kb: +(bytes / 1024).toFixed(1),
+    mjml_errors: errors,
+    ...((variants.count > 0 || variants.problems.length > 0) && {
+      test_variants: variants.groups.map((g) => `${g.group}: ${g.ids.join(", ")}`),
+      ...(variants.problems.length && { variant_problems: variants.problems }),
+      variants_note: "This build holds test variants. Fine for a Litmus round; resolve_variants removes them before the client gets the email.",
+    }),
+  };
+}
+
 tool(
   "compile_email",
   "Compile the email's email.mjml to build/email.html with MJML 5. Returns size and any MJML errors.",
   { client: clientArg, email: emailArg },
-  async ({ client, email }) => {
-    const e = await requireEmail(client, email);
-    const src = await within(e.emailDir, "email.mjml").catch(() => {
-      throw new Error(`No email.mjml yet in ${e.emailDir}.`);
-    });
-    const out = path.join(e.emailDir, "build", "email.html");
-    const source = await readFile(src, "utf8");
-    const result = await mjml2html(source, { validationLevel: "soft", filePath: src });
-    await mkdir(path.dirname(out), { recursive: true });
-    await writeFile(out, result.html);
-    const bytes = Buffer.byteLength(result.html);
-    const errors = (result.errors || []).slice(0, 25).map((x) => x.formattedMessage || x.message);
-    e.record.lastBuild = { at: now(), bytes, mjml_errors: errors.length };
-    await saveRecord(e.recordFile, e.record);
-    const variants = summarizeVariants(source);
-    return {
-      output: path.relative(e.dir, out).split(path.sep).join("/"),
-      kb: +(bytes / 1024).toFixed(1),
-      mjml_errors: errors,
-      ...((variants.count > 0 || variants.problems.length > 0) && {
-        test_variants: variants.groups.map((g) => `${g.group}: ${g.ids.join(", ")}`),
-        ...(variants.problems.length && { variant_problems: variants.problems }),
-        variants_note: "This build holds test variants. Fine for a Litmus round; resolve_variants removes them before the client gets the email.",
-      }),
-    };
-  }
+  async ({ client, email }) => compileOne(await requireEmail(client, email))
 );
 
 async function urlStatus(url) {
@@ -763,148 +764,170 @@ async function urlStatus(url) {
   }
 }
 
+// Checks URLs a few at a time instead of one after another. One checker can serve several emails,
+// so a footer link that every email of a batch uses is checked once.
+function urlChecker(concurrency = 8) {
+  const cache = new Map();
+  const waiting = [];
+  let active = 0;
+  const run = async (url) => {
+    while (active >= concurrency) await new Promise((resolve) => waiting.push(resolve));
+    active++;
+    try {
+      return await urlStatus(url);
+    } finally {
+      active--;
+      waiting.shift()?.();
+    }
+  };
+  return (url) => {
+    if (!cache.has(url)) cache.set(url, run(url));
+    return cache.get(url);
+  };
+}
+
 tool(
   "precheck_email",
   "Pre-check build/email.html before Klaviyo or Litmus: size, alt text, hosted https images, links and images responding, placeholder links, WCAG AA text contrast, text that loses contrast in Gmail App Android or Outlook Windows dark mode (approximation), dark-mode risk in transparent PNGs, near-black photo areas, and test values still in place. `failed` blocks a test; `warnings` don't.",
   { client: clientArg, email: emailArg, check_urls: z.boolean().default(true) },
-  async ({ client, email, check_urls }) => {
-    const e = await requireEmail(client, email);
-    const file = path.join(e.emailDir, "build", "email.html");
-    const html = await readFile(file, "utf8").catch(() => {
-      throw new Error("No build/email.html yet. Run compile_email first.");
-    });
-    const checks = [];
-    const warnings = [];
-    const add = (pass, check, detail) => checks.push({ pass, check, ...(detail ? { detail } : {}) });
-    const testValues = e.record.testValues || [];
-
-    const variantSrc = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
-    const variants = summarizeVariants(variantSrc);
-    const bytes = Buffer.byteLength(html);
-    if (variants.count > 0 && bytes >= 90 * 1024) {
-      // Variants repeat sections, so the size only counts once they are resolved.
-      warnings.push(`HTML is ${(bytes / 1024).toFixed(1)} KB with ${variants.count} test variants in it. Check the size again after resolve_variants (Gmail clips at ~102 KB).`);
-    } else {
-      add(bytes < 90 * 1024, "HTML under 90 KB (Gmail clips at ~102 KB)", `${(bytes / 1024).toFixed(1)} KB`);
-    }
-    if (variants.count > 0) {
-      warnings.push(`Test variants in the email: ${variants.groups.map((g) => `${g.group} (${g.ids.join(", ")})`).join("; ")}. Fine for a Litmus round. resolve_variants must remove them before handoff.`);
-    }
-    for (const p of variants.problems) add(false, "Test variant blocks are complete", p);
-
-    const imgs = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0]);
-    const noAlt = imgs.filter((t) => !/\balt\s*=/i.test(t));
-    add(noAlt.length === 0, "Every image has an alt attribute", `${imgs.length} images, ${noAlt.length} missing`);
-
-    // Background images too: MJML's background attribute, CSS url() and Outlook VML fills.
-    const isImageRef = (u) => !/^(#|data:)/i.test(u) && (/\.(png|jpe?g|gif|webp)(\?|#|$)/i.test(u) || /\/images\//i.test(u));
-    const bgUrls = [
-      ...[...html.matchAll(/\bbackground\s*=\s*"([^"]+)"/gi)].map((m) => m[1]),
-      ...[...html.matchAll(/url\(\s*(?:&quot;|['"])?([^'")&]+)(?:&quot;|['"])?\s*\)/gi)].map((m) => m[1]),
-      ...[...html.matchAll(/<v:(?:fill|image)\b[^>]*\bsrc\s*=\s*"([^"]+)"/gi)].map((m) => m[1]),
-    ]
-      .map((u) => u.trim())
-      .filter(isImageRef);
-    const srcs = [...new Set([...imgs.map((t) => (t.match(/\bsrc\s*=\s*"([^"]+)"/i) || [])[1]).filter(Boolean), ...bgUrls])];
-    const notHttps = srcs.filter((s) => !s.startsWith("https://"));
-    add(notHttps.length === 0, "Every image URL is absolute https (hosted)", notHttps.length ? `local or http: ${notHttps.join(", ")}` : `${srcs.length} unique`);
-
-    // Litmus flags preview text under 90 characters; inboxes cut it after about 130.
-    const mjmlSrc = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
-    const preview = (mjmlSrc.match(/<mj-preview>([\s\S]*?)<\/mj-preview>/i) || [])[1];
-    if (preview !== undefined) {
-      const n = preview.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().length;
-      add(n >= 90 && n <= 130, "Preview text is 90–130 characters (Litmus flags shorter)", `${n} characters`);
-    } else {
-      add(false, "Email has an mj-preview (90–130 characters)", "No mj-preview in email.mjml");
-    }
-
-    const placeholder = /\bexample\.(com|org|net)\b/i.test(html);
-    const placeholderIsTestValue = testValues.some((t) => /\bexample\.(com|org|net)\b/i.test(t.value));
-    if (placeholder && placeholderIsTestValue) warnings.push("example.com links are recorded test values; replace them before a real send.");
-    else add(!placeholder, "No example.com placeholder links", placeholder ? "Record them with set_test_values if they're deliberate test links" : undefined);
-
-    const hrefs = [...new Set([...html.matchAll(/<a\b[^>]*\bhref\s*=\s*"([^"]+)"/gi)].map((m) => m[1]))];
-    const webLinks = hrefs.filter((h) => /^https?:\/\//i.test(h));
-    const tagLinks = hrefs.filter((h) => /\{[%{]/.test(h));
-    const emptyLinks = hrefs.filter((h) => h === "#" || h === "");
-    add(emptyLinks.length === 0, "No empty (#) links", emptyLinks.length ? `${emptyLinks.length} found` : undefined);
-
-    if (check_urls) {
-      for (const u of srcs.filter((s) => s.startsWith("https://"))) {
-        const s = await urlStatus(u);
-        add(s === 200, "Image loads", `${s} ${u}`);
-      }
-      for (const u of webLinks) {
-        const s = await urlStatus(u);
-        add(typeof s === "number" && s >= 200 && s < 400, "Link responds", `${s} ${u}`);
-      }
-    }
-
-    const contrast = checkContrast(html);
-    add(
-      contrast.issues.length === 0,
-      "Text contrast meets WCAG AA (4.5:1, or 3:1 for large text)",
-      contrast.issues.length
-        ? contrast.issues.map((i) => `${i.color} on ${i.background} = ${i.ratio}:1 (needs ${i.required}:1), e.g. "${i.examples[0]}"`).join("; ")
-        : `${contrast.text_nodes_checked} text runs checked`
-    );
-
-    // Dark-mode and near-black risks in the images the email uses: local links, or the hosted links host_images recorded.
-    const hosted = e.record.klaviyo?.images || {};
-    // Text that loses contrast only in a client's forced dark mode (Gmail App Android, classic Outlook on Windows).
-    // The colours come from the dark-sim approximation, so these are warnings: Litmus is the proof.
-    const lightTexts = new Set(contrast.issues.flatMap((i) => i.examples));
-    for (const mode of DARK_MODES.filter((m) => m.id !== "apple")) {
-      let dark;
-      try {
-        dark = checkContrast(simulateDark(html, mode.id));
-      } catch {
-        continue;
-      }
-      const fresh = dark.issues.filter((i) => !i.examples.every((x) => lightTexts.has(x)));
-      if (fresh.length) {
-        warnings.push(
-          `Dark mode, ${mode.label} (approximation): ${fresh
-            .slice(0, 4)
-            .map((i) => `${i.color} on ${i.background} = ${i.ratio}:1, e.g. "${i.examples[0]}"`)
-            .join("; ")}. Look at this frame in preview_email and check the client in Litmus.`
-        );
-      }
-    }
-
-    for (const f of (await readdir(path.join(e.emailDir, "images")).catch(() => [])).filter((n) => /\.(png|jpe?g)$/i.test(n))) {
-      const url = hosted[`images/${f}`];
-      if (!html.includes(`images/${f}`) && !(url && html.includes(url))) continue;
-      const info = await imageInfo(path.join(e.emailDir, "images", f)).catch(() => null);
-      for (const w of info?.warnings || []) if (/dark/i.test(w)) warnings.push(`images/${f}: ${w}`);
-    }
-
-    const present = testValues.filter((t) => html.includes(t.value));
-    if (present.length) warnings.push(`Test values still in the email: ${present.map((t) => t.label).join(", ")}. Replace them before a real send.`);
-
-    const tags = [...new Set([...html.matchAll(/\{\{[^}]*\}\}|\{%[^%]*%\}/g)].map((m) => m[0]))];
-    if (!tags.some((t) => /unsubscribe/.test(t))) warnings.push("No Klaviyo unsubscribe tag found ({% unsubscribe_link %}).");
-    const passed = checks.every((c) => c.pass);
-    e.record.lastPrecheck = {
-      at: now(),
-      passed,
-      failed: checks.filter((c) => !c.pass).map((c) => `${c.check}: ${c.detail || ""}`),
-      warnings,
-    };
-    await saveRecord(e.recordFile, e.record);
-    return {
-      file: path.relative(e.dir, file).split(path.sep).join("/"),
-      passed,
-      failed: checks.filter((c) => !c.pass),
-      warnings,
-      checks,
-      klaviyo_tags: tags,
-      klaviyo_tag_links: tagLinks,
-      note: "Klaviyo tags are filled in only when Klaviyo renders or sends the email.",
-    };
-  }
+  async ({ client, email, check_urls }) => precheckOne(await requireEmail(client, email), { check_urls })
 );
+
+async function precheckOne(e, { check_urls = true, checkUrl = urlChecker() } = {}) {
+  const file = path.join(e.emailDir, "build", "email.html");
+  const html = await readFile(file, "utf8").catch(() => {
+    throw new Error("No build/email.html yet. Run compile_email first.");
+  });
+  const checks = [];
+  const warnings = [];
+  const add = (pass, check, detail) => checks.push({ pass, check, ...(detail ? { detail } : {}) });
+  const testValues = e.record.testValues || [];
+
+  const variantSrc = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
+  const variants = summarizeVariants(variantSrc);
+  const bytes = Buffer.byteLength(html);
+  if (variants.count > 0 && bytes >= 90 * 1024) {
+    // Variants repeat sections, so the size only counts once they are resolved.
+    warnings.push(`HTML is ${(bytes / 1024).toFixed(1)} KB with ${variants.count} test variants in it. Check the size again after resolve_variants (Gmail clips at ~102 KB).`);
+  } else {
+    add(bytes < 90 * 1024, "HTML under 90 KB (Gmail clips at ~102 KB)", `${(bytes / 1024).toFixed(1)} KB`);
+  }
+  if (variants.count > 0) {
+    warnings.push(`Test variants in the email: ${variants.groups.map((g) => `${g.group} (${g.ids.join(", ")})`).join("; ")}. Fine for a Litmus round. resolve_variants must remove them before handoff.`);
+  }
+  for (const p of variants.problems) add(false, "Test variant blocks are complete", p);
+
+  const imgs = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0]);
+  const noAlt = imgs.filter((t) => !/\balt\s*=/i.test(t));
+  add(noAlt.length === 0, "Every image has an alt attribute", `${imgs.length} images, ${noAlt.length} missing`);
+
+  // Background images too: MJML's background attribute, CSS url() and Outlook VML fills.
+  const isImageRef = (u) => !/^(#|data:)/i.test(u) && (/\.(png|jpe?g|gif|webp)(\?|#|$)/i.test(u) || /\/images\//i.test(u));
+  const bgUrls = [
+    ...[...html.matchAll(/\bbackground\s*=\s*"([^"]+)"/gi)].map((m) => m[1]),
+    ...[...html.matchAll(/url\(\s*(?:&quot;|['"])?([^'")&]+)(?:&quot;|['"])?\s*\)/gi)].map((m) => m[1]),
+    ...[...html.matchAll(/<v:(?:fill|image)\b[^>]*\bsrc\s*=\s*"([^"]+)"/gi)].map((m) => m[1]),
+  ]
+    .map((u) => u.trim())
+    .filter(isImageRef);
+  const srcs = [...new Set([...imgs.map((t) => (t.match(/\bsrc\s*=\s*"([^"]+)"/i) || [])[1]).filter(Boolean), ...bgUrls])];
+  const notHttps = srcs.filter((s) => !s.startsWith("https://"));
+  add(notHttps.length === 0, "Every image URL is absolute https (hosted)", notHttps.length ? `local or http: ${notHttps.join(", ")}` : `${srcs.length} unique`);
+
+  // Litmus flags preview text under 90 characters; inboxes cut it after about 130.
+  const mjmlSrc = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
+  const preview = (mjmlSrc.match(/<mj-preview>([\s\S]*?)<\/mj-preview>/i) || [])[1];
+  if (preview !== undefined) {
+    const n = preview.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().length;
+    add(n >= 90 && n <= 130, "Preview text is 90–130 characters (Litmus flags shorter)", `${n} characters`);
+  } else {
+    add(false, "Email has an mj-preview (90–130 characters)", "No mj-preview in email.mjml");
+  }
+
+  const placeholder = /\bexample\.(com|org|net)\b/i.test(html);
+  const placeholderIsTestValue = testValues.some((t) => /\bexample\.(com|org|net)\b/i.test(t.value));
+  if (placeholder && placeholderIsTestValue) warnings.push("example.com links are recorded test values; replace them before a real send.");
+  else add(!placeholder, "No example.com placeholder links", placeholder ? "Record them with set_test_values if they're deliberate test links" : undefined);
+
+  const hrefs = [...new Set([...html.matchAll(/<a\b[^>]*\bhref\s*=\s*"([^"]+)"/gi)].map((m) => m[1]))];
+  const webLinks = hrefs.filter((h) => /^https?:\/\//i.test(h));
+  const tagLinks = hrefs.filter((h) => /\{[%{]/.test(h));
+  const emptyLinks = hrefs.filter((h) => h === "#" || h === "");
+  add(emptyLinks.length === 0, "No empty (#) links", emptyLinks.length ? `${emptyLinks.length} found` : undefined);
+
+  if (check_urls) {
+    const imageUrls = srcs.filter((s) => s.startsWith("https://"));
+    const [imageStatus, linkStatus] = await Promise.all([Promise.all(imageUrls.map(checkUrl)), Promise.all(webLinks.map(checkUrl))]);
+    imageUrls.forEach((u, i) => add(imageStatus[i] === 200, "Image loads", `${imageStatus[i]} ${u}`));
+    webLinks.forEach((u, i) => {
+      const s = linkStatus[i];
+      add(typeof s === "number" && s >= 200 && s < 400, "Link responds", `${s} ${u}`);
+    });
+  }
+
+  const contrast = checkContrast(html);
+  add(
+    contrast.issues.length === 0,
+    "Text contrast meets WCAG AA (4.5:1, or 3:1 for large text)",
+    contrast.issues.length
+      ? contrast.issues.map((i) => `${i.color} on ${i.background} = ${i.ratio}:1 (needs ${i.required}:1), e.g. "${i.examples[0]}"`).join("; ")
+      : `${contrast.text_nodes_checked} text runs checked`
+  );
+
+  // Dark-mode and near-black risks in the images the email uses: local links, or the hosted links host_images recorded.
+  const hosted = e.record.klaviyo?.images || {};
+  // Text that loses contrast only in a client's forced dark mode (Gmail App Android, classic Outlook on Windows).
+  // The colours come from the dark-sim approximation, so these are warnings: Litmus is the proof.
+  const lightTexts = new Set(contrast.issues.flatMap((i) => i.examples));
+  for (const mode of DARK_MODES.filter((m) => m.id !== "apple")) {
+    let dark;
+    try {
+      dark = checkContrast(simulateDark(html, mode.id));
+    } catch {
+      continue;
+    }
+    const fresh = dark.issues.filter((i) => !i.examples.every((x) => lightTexts.has(x)));
+    if (fresh.length) {
+      warnings.push(
+        `Dark mode, ${mode.label} (approximation): ${fresh
+          .slice(0, 4)
+          .map((i) => `${i.color} on ${i.background} = ${i.ratio}:1, e.g. "${i.examples[0]}"`)
+          .join("; ")}. Look at this frame in preview_email and check the client in Litmus.`
+      );
+    }
+  }
+
+  for (const f of (await readdir(path.join(e.emailDir, "images")).catch(() => [])).filter((n) => /\.(png|jpe?g)$/i.test(n))) {
+    const url = hosted[`images/${f}`];
+    if (!html.includes(`images/${f}`) && !(url && html.includes(url))) continue;
+    const info = await imageInfo(path.join(e.emailDir, "images", f)).catch(() => null);
+    for (const w of info?.warnings || []) if (/dark/i.test(w)) warnings.push(`images/${f}: ${w}`);
+  }
+
+  const present = testValues.filter((t) => html.includes(t.value));
+  if (present.length) warnings.push(`Test values still in the email: ${present.map((t) => t.label).join(", ")}. Replace them before a real send.`);
+
+  const tags = [...new Set([...html.matchAll(/\{\{[^}]*\}\}|\{%[^%]*%\}/g)].map((m) => m[0]))];
+  if (!tags.some((t) => /unsubscribe/.test(t))) warnings.push("No Klaviyo unsubscribe tag found ({% unsubscribe_link %}).");
+  const passed = checks.every((c) => c.pass);
+  e.record.lastPrecheck = {
+    at: now(),
+    passed,
+    failed: checks.filter((c) => !c.pass).map((c) => `${c.check}: ${c.detail || ""}`),
+    warnings,
+  };
+  await saveRecord(e.recordFile, e.record);
+  return {
+    file: path.relative(e.dir, file).split(path.sep).join("/"),
+    passed,
+    failed: checks.filter((c) => !c.pass),
+    warnings,
+    checks,
+    klaviyo_tags: tags,
+    klaviyo_tag_links: tagLinks,
+    note: "Klaviyo tags are filled in only when Klaviyo renders or sends the email.",
+  };
+}
 
 tool(
   "preview_email",
@@ -921,6 +944,84 @@ tool(
     return {
       ...urls,
       note: "The server runs while this Claude session is open. Local images (../images/…) show here; Klaviyo-hosted images need internet.",
+    };
+  }
+);
+
+const MAX_BATCH = 20;
+const short = (s, n = 400) => (s.length > n ? `${s.slice(0, n)}…` : s);
+
+tool(
+  "check_emails",
+  "Compile and pre-check several emails of one client in one call, with the same checks as compile_email and precheck_email. Returns one row per email and an overview page that shows every email at 600px and 375px, with a link to each email's compare page (dark frames). Use it after building several emails, after a change to several emails, or before testing several emails. Pass `emails`, or `group` to check every email in a group folder.",
+  {
+    client: clientArg,
+    emails: z.array(z.string()).min(1).max(MAX_BATCH).optional().describe('Email paths, e.g. ["black-friday/teaser", "black-friday/launch"]'),
+    group: z.string().optional().describe('Group folder, e.g. "black-friday": checks every email inside it'),
+    check_urls: z.boolean().default(true),
+    open: z.boolean().default(false).describe("Also open the overview page in the default browser"),
+  },
+  async ({ client, emails, group, check_urls, open }) => {
+    if (!emails?.length && !group) throw new Error("Pass emails (a list of email paths) or group (a group folder).");
+    const c = await requireClient(client);
+    let list = [...new Set(emails || [])];
+    if (group) {
+      const g = group.replace(/^\/+|\/+$/g, "");
+      const inGroup = (await findEmails(c.dir)).filter((rel) => rel.startsWith(`${g}/`));
+      if (!inGroup.length) throw new Error(`No emails in the group "${g}" for client "${client}". list_emails shows the email paths.`);
+      list = [...new Set([...list, ...inGroup])];
+    }
+    if (list.length > MAX_BATCH) throw new Error(`${list.length} emails. Check at most ${MAX_BATCH} in one call.`);
+
+    // One URL checker for the whole batch: links that several emails share are checked once.
+    const checkUrl = urlChecker();
+    const results = await Promise.all(
+      list.map(async (email) => {
+        let e;
+        try {
+          e = await requireEmail(client, email);
+          const built = await compileOne(e);
+          const pre = await precheckOne(e, { check_urls, checkUrl });
+          return {
+            e,
+            row: {
+              email: e.email,
+              passed: pre.passed && built.mjml_errors.length === 0,
+              kb: built.kb,
+              mjml_errors: built.mjml_errors.map((m) => short(m, 200)),
+              failed: pre.failed.map((x) => short(`${x.check}${x.detail ? `: ${x.detail}` : ""}`)),
+              warnings: pre.warnings,
+              ...(built.test_variants && { test_variants: built.test_variants }),
+            },
+          };
+        } catch (err) {
+          return { e: null, row: { email: e?.email || email, passed: false, error: err.message } };
+        }
+      })
+    );
+
+    const clientsRoot = path.join(c.ws, "clients");
+    const { port } = await ensurePreviewServer(clientsRoot);
+    const realRoot = await realpath(clientsRoot);
+    const shown = [];
+    for (const { e, row } of results) {
+      const html = e && path.join(e.emailDir, "build", "email.html");
+      if (!html || !existsSync(html)) continue;
+      const title = `${c.config.name} / ${e.email}`;
+      const real = await realpath(html);
+      row.compare = previewUrls(port, realRoot, real, title).compare;
+      shown.push({ htmlFile: real, title });
+    }
+    const overview = shown.length ? overviewUrl(port, realRoot, shown, `${c.config.name}: ${shown.length} emails`) : null;
+    if (open && overview) openInBrowser(overview);
+    const rows = results.map((x) => x.row);
+    return {
+      client,
+      checked: rows.length,
+      passed: rows.filter((r) => r.passed).length,
+      overview,
+      emails: rows,
+      note: "passed means no MJML errors and no failed pre-check. Images stay local until host_images runs, so \"Every image URL is absolute https\" fails until then. The overview shows 600px and 375px; each email's compare link adds the dark frames.",
     };
   }
 );

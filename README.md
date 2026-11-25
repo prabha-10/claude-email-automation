@@ -72,7 +72,7 @@ Rules
    Daily flow, one workspace folder with one folder per client
    - The folder I open Claude in is the workspace. /emailqa:start makes it one without asking, and client folders go inside it.
    - /emailqa:start  → first run: checks the install, installs the Figma server, guides the Figma bridge, checks the Klaviyo key, Litmus address and Litmus login in Chrome. Then it picks the client from my message, the open Figma file, or the only client, and asks only if it cannot tell.
-   - Select the email frame in Figma (or paste its link), then /emailqa:build-email
+   - Select the email frame in Figma (or paste its link), then /emailqa:build-email. With several frames selected, one agent builds each email at the same time, and check_emails pre-checks them all in one call.
    - /emailqa:test-email  → [TEST] template in my Klaviyo test account, test send to Litmus, review and fixes. At most 2 Litmus rounds per email, plus one confirm round after test variants are resolved. Before it changes the email, it finds the cause of each problem (lessons file, then the web), writes a fix plan, and tests several fixes side by side when the cause is not known. Every fix that was tried, also a failed one, goes into the workspace's library/lessons.md. A Sonnet agent does the Litmus review.
    - /emailqa:handoff-email  → once approved: images and final template into the client's Klaviyo, after one question that covers the upload and the import
    Plain language works too: "start EmailQA", "build the selected frame", "test it in Litmus", "hand it off to the client".
@@ -166,11 +166,12 @@ Talk to Claude in plain language, or type the slash command. The plugin's skills
 |---|---|
 | `/emailqa:start` | set up, or pick a new or existing client |
 | "Build the selected Figma frame for Acme" | build-email: MJML, pre-checks, 600px / 375px / dark preview |
+| "Build the 3 selected frames" | build-email: one agent per email at the same time, then one pre-check and one overview page for all |
 | "Make the headline smaller" | build-email: edit, recompile, re-check |
 | "Test it in Litmus" / "re-test after the fixes" | test-email: host images, publish `[TEST]` template, send to Litmus, review |
 | "It's approved, hand it off to the client" / pasting the client's image links | handoff-email: images and final template into the client's Klaviyo |
 
-One email at a time: build → local preview → Litmus → fix → re-test → sign off → hand off to the client's Klaviyo. A person then builds and sends the campaign in the client's Klaviyo.
+Each email goes through: build → local preview → Litmus → fix → re-test → sign off → hand off to the client's Klaviyo. Several emails can go through the build and the Litmus review at the same time. A person then builds and sends the campaign in the client's Klaviyo.
 
 **Test values.** When a design has no real links or address yet, fake ones are recorded per email. The pre-check keeps warning until they're replaced.
 

@@ -1,11 +1,11 @@
 ---
 name: build-email
-description: Build one email from a Figma frame into MJML and compiled HTML inside a client's folder in the EmailQA workspace. Check it locally with pre-checks and a 600px, 375px and dark-mode preview, then make the user's requested changes. Triggers: the user selects a Figma frame or pastes a frame link and asks to build, convert or code an email. Another trigger is a request for layout, copy or style changes to an email.
+description: Build emails from Figma frames into MJML and compiled HTML inside a client's folder in the EmailQA workspace. Several frames build at the same time, one agent per email. Check each email locally with pre-checks and a 600px, 375px and dark-mode preview, then make the user's requested changes. Triggers: the user selects one or more Figma frames or pastes frame links and asks to build, convert or code emails. Another trigger is a request for layout, copy or style changes to an email.
 ---
 
 # Build an email from Figma
 
-One email at a time, for one client. Every EmailQA tool takes `client` (folder name) and `email` (a path such as `spring-sale` or `black-friday/teaser`). If there is no workspace or client yet, use the start skill first.
+One client at a time. Steps 1 to 7 build one email. For two or more frames, see "Several emails" at the end. Every EmailQA tool takes `client` (folder name) and `email` (a path such as `spring-sale` or `black-friday/teaser`). If there is no workspace or client yet, use the start skill first.
 
 Read [mjml-rules.md](mjml-rules.md) before you write any MJML. If the workspace has `library/lessons.md` (team lessons), read it too. `library/mjml-starter.mjml` is a good starting point.
 
@@ -20,7 +20,8 @@ Work from start to finish without questions. If step 1 cannot find the frame, as
 - `figma_get_status` with `probe: true`. If it is not connected, use the Figma part of the start skill's setup.
 - `figma_list_open_files`: the bridge sees every open file that has the plugin running, from any client or Figma account. Find this client's file and call `check_figma_file` with its file key. If the check fails, ask the user to open the right file. If the user says that the file belongs to this client, add it with `update_client`.
 - Pin the file: `figma_navigate` with the file's URL and `lock: true`, so that other files cannot take over. Pass `fileKey` to `figma_execute`.
-- The frame: if the user pasted a Figma link with `node-id=197-3`, use node `197:3`. If not, call `figma_get_selection`. Exactly one frame must be selected. If none is selected, ask the user to select the email frame. Note its node ID, name and width.
+- The frame: if the user pasted a Figma link with `node-id=197-3`, use node `197:3`. If not, call `figma_get_selection`. If no frame is selected, ask the user to select the email frame. Note its node ID, name and width.
+- Two or more frames (selected, or pasted as links): do the rest of this step once, then go to "Several emails" at the end of this file.
 
 ## 2. Create the email folder
 
@@ -67,3 +68,20 @@ Report in a few lines: what you built, the fonts, anything you simplified from t
 If the user asked for a build and a test, or says the email looks right, go straight on to the test-email skill.
 
 If you learned something that helps every future email (not just this client), suggest adding it to `library/lessons.md`.
+
+## Several emails
+
+If the user selects or links two or more frames, build the emails at the same time:
+
+1. Do step 1 once: the status, the client's file and the pin. Note the node ID, name and width of each frame.
+2. Call `new_email` for each frame here, in this session, so that two emails never get the same folder. If the frames belong to one campaign, give them the same `group`.
+3. Start one `emailqa:email-builder` agent per email, all in the same message. Give each agent `client`, `email`, `file_key`, `node_id`, the frame name and width, and `plugin_root`. `plugin_root` is the folder two levels above this skill. Also give the notes from the user that apply to that email.
+4. Start at most 5 agents in one message. The Figma plugin runs one script at a time, so more agents wait for each other. When the first agents return, start the next ones.
+5. When all agents return, call `check_emails` with the list of emails and `open: true`. It compiles and pre-checks every email in one call. It also opens the `overview` page, which shows every email at 600px and 375px with a link to each compare page.
+6. Report in one table: the email, the pre-check result, the guesses and what is still wrong. Then give the `overview` link.
+
+For a change to every email, for example a new footer, edit each `email.mjml`. Then call `check_emails` once, not the three tools per email.
+
+If an agent returns `blocked`, build that email here with steps 3 to 6 after the others finish. If the agent tool is not available, build the emails one after another in this session, then call `check_emails`.
+
+If the user asked for a build and a test, go on to the test-email skill with all the emails.

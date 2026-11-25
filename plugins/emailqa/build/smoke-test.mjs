@@ -119,7 +119,7 @@ for (const n of ["setup_status", "install_figma_server", "prepare_figma_bridge",
   check(names.includes(n), `tool ${n} listed`);
 }
 
-for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks"]) check(names.includes(n), `tool ${n} listed`);
+for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails"]) check(names.includes(n), `tool ${n} listed`);
 
 let r = await b.call("setup_status");
 check(!r.isError && r.data.checks?.length >= 6, "setup_status runs", r.text);
@@ -253,6 +253,47 @@ if (!r.isError) {
   check(img.status === 200, "preview serves local images");
   const escape = await fetch(r.data.desktop.replace(/\/c\/.*$/, "/c/..%2F..%2Fworkspace.json"));
   check(escape.status === 403 || escape.status === 404, "preview can't escape clients/");
+}
+
+// ---------- several emails: check_emails and the overview page ----------
+{
+  const C = "acme-outdoors";
+  r = await b.call("new_email", { client: C, name: "Spring Launch", group: "Spring Campaign" });
+  check(!r.isError && r.data.email === "spring-campaign/spring-launch", "batch: second email in the group", r.text);
+  writeFileSync(
+    path.join(ws, "clients", C, "emails", "spring-campaign", "spring-launch", "email.mjml"),
+    `<mjml lang="en"><mj-head><mj-title>Launch</mj-title><mj-preview>The spring range is here. New jackets, new boots and free delivery on every order this week only.</mj-preview></mj-head>
+<mj-body width="600px" background-color="#ffffff"><mj-section background-color="#ffffff"><mj-column>
+<mj-text font-size="16px" color="#222222">Hello {{ first_name|default:"there" }}</mj-text>
+<mj-text font-size="12px" color="#444444"><a href="{% unsubscribe_link %}" style="color:#444444">Unsubscribe</a></mj-text>
+</mj-column></mj-section></mj-body></mjml>`
+  );
+  r = await b.call("check_emails", { client: C, group: "spring-campaign", check_urls: false });
+  const rows = r.data.emails || [];
+  const teaser = rows.find((x) => x.email === "spring-campaign/spring-teaser");
+  const launch = rows.find((x) => x.email === "spring-campaign/spring-launch");
+  check(!r.isError && r.data.checked === 2 && teaser && launch, "check_emails checks every email in a group", r.text);
+  check(launch?.passed === true && launch.failed.length === 0 && launch.mjml_errors.length === 0, "check_emails: a clean email passes", JSON.stringify(launch));
+  check(teaser?.passed === false && teaser.failed.some((f) => /contrast/i.test(f)), "check_emails: the failing email shows its failed checks", JSON.stringify(teaser));
+  check(teaser?.warnings?.some((w) => /^Dark mode, Gmail App Android/.test(w)), "check_emails keeps the dark-mode warnings", JSON.stringify(teaser?.warnings));
+  check(r.data.passed === 1 && existsSync(path.join(ws, "clients", C, "emails", "spring-campaign", "spring-launch", "build", "email.html")), "check_emails compiles each email", r.text);
+  if (r.data.overview) {
+    const res = await fetch(r.data.overview);
+    const page = await res.text();
+    check(res.status === 200 && page.includes("spring-teaser/build/email.html") && page.includes("spring-launch/build/email.html"), "overview page shows every email", page.slice(0, 300));
+    check((page.match(/<iframe /g) || []).length === 4 && page.includes("/compare?src="), "overview has 600px and 375px per email and a compare link", page.slice(0, 300));
+    check(teaser?.compare && (await fetch(teaser.compare)).status === 200, "check_emails returns a working compare link per email");
+    const bad = await fetch(r.data.overview.replace(/src=[^&]+/, "src=..%2Fx"));
+    check(bad.status === 400, "overview refuses a src outside the preview folder");
+  } else check(false, "check_emails returns an overview URL", r.text);
+  r = await b.call("check_emails", { client: C, emails: ["spring-campaign/spring-launch", "nope/missing"], check_urls: false });
+  check(!r.isError && r.data.emails.find((x) => x.email === "spring-campaign/spring-launch")?.passed === true && /No email/.test(r.data.emails.find((x) => x.email === "nope/missing")?.error || ""), "check_emails reports a missing email and still checks the others", r.text);
+  r = await b.call("check_emails", { client: C, check_urls: false });
+  check(r.isError, "check_emails needs emails or a group");
+  r = await b.call("check_emails", { client: C, group: "no-such-group", check_urls: false });
+  check(r.isError && /No emails in the group/.test(r.text), "check_emails refuses an empty group", r.text);
+  const agent = readFileSync(path.join(root, "agents", "email-builder.md"), "utf8");
+  check(/^name: email-builder$/m.test(agent) && /^model: inherit$/m.test(agent) && /figma_get_selection/.test(agent), "email-builder agent is defined and keeps off the shared selection");
 }
 
 r = await b.call("check_figma_file", { client: "acme-outdoors", file: "https://www.figma.com/design/2QGsznyC6myiv41zPJlSxu/x" });

@@ -1,5 +1,6 @@
 // Local preview server: serves the workspace's clients/ folder read-only on 127.0.0.1, plus a compare page
-// that shows an email at 600px, at 375px (mobile breakpoint) and once per client dark mode (dark-sim.mjs).
+// that shows an email at 600px, at 375px (mobile breakpoint) and once per client dark mode (dark-sim.mjs),
+// and an overview page that shows several emails at 600px and 375px (check_emails).
 // Chrome can't open file:// pages for Claude, so this replaces ad-hoc localhost servers.
 // An .html file with ?dark=<mode id> is served through simulateDark; ?dark=1 is the Gmail App Android mode.
 
@@ -53,6 +54,26 @@ Apple Mail shows only the email's own dark styles.</p>
 </body></html>`;
 }
 
+const compareHref = (src, title) => `/compare?src=${encodeURIComponent(src)}&title=${encodeURIComponent(title)}`;
+
+// Several emails on one page (check_emails): 600px and 375px per email, and a link to its compare page.
+function overviewPage(items, title) {
+  const rows = items
+    .map(
+      ({ src, name }) =>
+        `<section><h2>${esc(name)} · <a href="${esc(compareHref(src, name))}">compare page with the dark frames</a></h2><div class="row">` +
+        `<figure style="width:640px"><figcaption>Desktop 600px</figcaption><iframe src="${esc(src)}" style="width:640px" title="${esc(name)}, desktop"></iframe></figure>` +
+        `<figure style="width:375px"><figcaption>Mobile 375px</figcaption><iframe src="${esc(src)}" style="width:375px" title="${esc(name)}, mobile"></iframe></figure>` +
+        `</div></section>`
+    )
+    .join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} · EmailQA overview</title>
+<style>:root{color-scheme:light}body{margin:0;padding:16px;background:#e9e9ec;font:13px system-ui,sans-serif;color:#222}
+h2{font-size:15px;margin:24px 0 8px}.row{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}figure{margin:0}
+figcaption{margin:0 0 6px;font-weight:600}iframe{height:2600px;border:0;background:#fff;box-shadow:0 1px 4px #0003}</style>
+</head><body><p><b>${esc(title)}</b> · local preview of ${items.length} emails. The dark frames are on each email's compare page.</p>${rows}</body></html>`;
+}
+
 async function handle(req, res, root) {
   try {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -61,6 +82,13 @@ async function handle(req, res, root) {
       const src = url.searchParams.get("src") || "";
       if (!src.startsWith("/c/")) return send(res, 400, "Bad src");
       return send(res, 200, comparePage(src, url.searchParams.get("title") || src), TYPES[".html"]);
+    }
+    if (url.pathname === "/overview") {
+      const srcs = url.searchParams.getAll("src");
+      const names = url.searchParams.getAll("name");
+      if (!srcs.length || srcs.length > 20 || srcs.some((s) => !s.startsWith("/c/"))) return send(res, 400, "Bad src");
+      const items = srcs.map((src, i) => ({ src, name: names[i] || src }));
+      return send(res, 200, overviewPage(items, url.searchParams.get("title") || "Emails"), TYPES[".html"]);
     }
     if (!url.pathname.startsWith("/c/")) return send(res, 404, "Not found");
     const rel = decodeURIComponent(url.pathname.slice(3));
@@ -102,16 +130,27 @@ export async function ensurePreviewServer(clientsRoot) {
   return state;
 }
 
+const srcFor = (clientsRoot, htmlFile) => `/c/${path.relative(clientsRoot, htmlFile).split(path.sep).map(encodeURIComponent).join("/")}`;
+
 export function previewUrls(port, clientsRoot, htmlFile, title) {
-  const rel = path.relative(clientsRoot, htmlFile).split(path.sep).map(encodeURIComponent).join("/");
   const base = `http://127.0.0.1:${port}`;
-  const src = `/c/${rel}`;
+  const src = srcFor(clientsRoot, htmlFile);
   return {
-    compare: `${base}/compare?src=${encodeURIComponent(src)}&title=${encodeURIComponent(title)}`,
+    compare: `${base}${compareHref(src, title)}`,
     desktop: `${base}${src}`,
     dark: `${base}${src}?dark=${LEGACY_DARK}`,
     ...Object.fromEntries(DARK_MODES.map((m) => [darkKey(m.id), `${base}${src}?dark=${m.id}`])),
   };
+}
+
+// items: [{ htmlFile, title }], at most 20.
+export function overviewUrl(port, clientsRoot, items, title) {
+  const q = new URLSearchParams({ title });
+  for (const { htmlFile, title: name } of items) {
+    q.append("src", srcFor(clientsRoot, htmlFile));
+    q.append("name", name);
+  }
+  return `http://127.0.0.1:${port}/overview?${q}`;
 }
 
 export function openInBrowser(url) {
