@@ -1,6 +1,7 @@
 // Read-only. Run with figma_execute (pass fileKey), after replacing __NODE_ID__ with the frame's node ID.
 // Returns a compact layout of the frame: positions relative to the frame, sizes, blend modes, fills,
-// auto-layout, fonts and text. It changes nothing in the file.
+// strokes (borders), auto-layout, fonts and text, underlines, links set in Figma, and one entry per
+// style run when a text layer mixes fonts, sizes, colours, underlines or links. It changes nothing in the file.
 const root = await figma.getNodeByIdAsync("__NODE_ID__");
 if (!root) return { error: "Node not found" };
 const box = root.absoluteBoundingBox || { x: 0, y: 0 };
@@ -16,6 +17,21 @@ const fills = (n) => {
     return undefined;
   }
 };
+const strokes = (n) => {
+  try {
+    const vis = (n.strokes || []).filter((s) => s.visible !== false && s.type === "SOLID");
+    if (!vis.length) return undefined;
+    const w =
+      n.strokeWeight === figma.mixed
+        ? [n.strokeTopWeight, n.strokeRightWeight, n.strokeBottomWeight, n.strokeLeftWeight].join("/")
+        : n.strokeWeight;
+    if (!w) return undefined;
+    return hex(vis[0].color) + " " + w + "px" + (n.strokeAlign && n.strokeAlign !== "INSIDE" ? " " + n.strokeAlign.toLowerCase() : "");
+  } catch (e) {
+    return undefined;
+  }
+};
+const urlOf = (h) => (h && h !== figma.mixed && h.type === "URL" ? h.value : undefined);
 const nodes = [];
 let outlinedTextGroups = 0;
 let liveText = 0;
@@ -30,6 +46,8 @@ function walk(n, depth) {
   if (n.opacity !== undefined && n.opacity < 1) e.opacity = Math.round(n.opacity * 100) / 100;
   const f = fills(n);
   if (f) e.fill = f;
+  const s = strokes(n);
+  if (s) e.stroke = s;
   if (n.cornerRadius && n.cornerRadius !== figma.mixed) e.radius = n.cornerRadius;
   if (n.layoutMode && n.layoutMode !== "NONE") {
     e.layout = { mode: n.layoutMode, pad: [n.paddingTop, n.paddingRight, n.paddingBottom, n.paddingLeft], gap: n.itemSpacing };
@@ -46,6 +64,22 @@ function walk(n, depth) {
       if (n.letterSpacing !== figma.mixed && n.letterSpacing.value) e.letterSpacing = n.letterSpacing.value + (n.letterSpacing.unit === "PERCENT" ? "%" : "px");
       if (n.textAlignHorizontal) e.align = n.textAlignHorizontal;
       if (n.textCase && n.textCase !== "ORIGINAL") e.textCase = n.textCase;
+      if (n.textDecoration && n.textDecoration !== figma.mixed && n.textDecoration !== "NONE") e.decoration = n.textDecoration;
+      if (urlOf(n.hyperlink)) e.link = urlOf(n.hyperlink);
+      const mixed = [n.fontName, n.fontSize, n.fills, n.textDecoration, n.hyperlink].some((v) => v === figma.mixed);
+      if (mixed) {
+        e.runs = n
+          .getStyledTextSegments(["fontName", "fontSize", "fills", "textDecoration", "hyperlink"])
+          .slice(0, 30)
+          .map((r) => {
+            const run = { text: r.characters.slice(0, 120), font: r.fontName.family + " " + r.fontName.style, size: r.fontSize };
+            const rf = fills(r);
+            if (rf) run.fill = rf;
+            if (r.textDecoration && r.textDecoration !== "NONE") run.decoration = r.textDecoration;
+            if (urlOf(r.hyperlink)) run.link = urlOf(r.hyperlink);
+            return run;
+          });
+      }
     } catch (err) {}
   }
   const kids = "children" in n ? n.children : [];

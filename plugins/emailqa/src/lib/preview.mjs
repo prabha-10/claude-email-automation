@@ -51,10 +51,17 @@ Apple Mail shows only the email's own dark styles.</p>
     const w = m.id === "outlook-windows" ? 640 : 375;
     return frame(`${m.label} dark, ${w === 640 ? "600px" : "375px"} · approximation`, w, m.id, m.note);
   }).join("")}</div>
-</body></html>`;
+${FIT_FRAMES}</body></html>`;
 }
 
 const compareHref = (src, title) => `/compare?src=${encodeURIComponent(src)}&title=${encodeURIComponent(title)}`;
+
+// Each frame grows to the full height of its email (same origin, so the page can read it), so a tall
+// email is never cut off. It fits again when late images load.
+const FIT_FRAMES = `<script>for (const f of document.querySelectorAll("iframe")) f.addEventListener("load", () => {
+  try { const d = f.contentDocument; const fit = () => { f.style.height = Math.max(600, d.documentElement.scrollHeight) + "px"; };
+    fit(); d.querySelectorAll("img").forEach((i) => i.addEventListener("load", fit)); setTimeout(fit, 1500); } catch (e) {}
+});</script>`;
 
 // Several emails on one page (check_emails): 600px and 375px per email, and a link to its compare page.
 function overviewPage(items, title) {
@@ -71,7 +78,7 @@ function overviewPage(items, title) {
 <style>:root{color-scheme:light}body{margin:0;padding:16px;background:#e9e9ec;font:13px system-ui,sans-serif;color:#222}
 h2{font-size:15px;margin:24px 0 8px}.row{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}figure{margin:0}
 figcaption{margin:0 0 6px;font-weight:600}iframe{height:2600px;border:0;background:#fff;box-shadow:0 1px 4px #0003}</style>
-</head><body><p><b>${esc(title)}</b> · local preview of ${items.length} emails. The dark frames are on each email's compare page.</p>${rows}</body></html>`;
+</head><body><p><b>${esc(title)}</b> · local preview of ${items.length} emails. The dark frames are on each email's compare page.</p>${rows}${FIT_FRAMES}</body></html>`;
 }
 
 async function handle(req, res, root) {

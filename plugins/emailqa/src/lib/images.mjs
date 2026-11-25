@@ -132,7 +132,7 @@ export async function imageInfo(file) {
       warnings.push(`Couldn't decode the PNG: ${e.message}`);
     }
   }
-  if (buf.length > 1024 * 1024) warnings.push("Over 1 MB: slow to load; compress or resize.");
+  if (buf.length > 1024 * 1024) warnings.push("Over 1 MB: slow to load. convert_image with max_width (2x the display width, e.g. 1200) and quality 75 to 82 makes it smaller.");
   return { ...info, warnings };
 }
 
@@ -166,13 +166,56 @@ function encode(img, dest, quality = 85) {
 // Cut a region out of a larger capture (e.g. a layer out of its parent frame, so blend modes and
 // whatever sits underneath are kept). x/y/w/h are design pixels relative to the capture's top-left;
 // designWidth is the capture's width in design pixels, so the 2x (or capped) scale is worked out here.
+// Area-average downscale to `width` px (keeps the aspect ratio). Never upscales.
+function downscale(img, width) {
+  if (!width || img.width <= width) return img;
+  const height = Math.max(1, Math.round((img.height * width) / img.width));
+  const out = Buffer.alloc(width * height * 4);
+  const sx = img.width / width;
+  const sy = img.height / height;
+  for (let y = 0; y < height; y++) {
+    const y0 = y * sy;
+    const y1 = y0 + sy;
+    for (let x = 0; x < width; x++) {
+      const x0 = x * sx;
+      const x1 = x0 + sx;
+      const sum = [0, 0, 0, 0];
+      let total = 0;
+      for (let yy = Math.floor(y0); yy < Math.min(img.height, Math.ceil(y1)); yy++) {
+        const wy = Math.min(y1, yy + 1) - Math.max(y0, yy);
+        for (let xx = Math.floor(x0); xx < Math.min(img.width, Math.ceil(x1)); xx++) {
+          const wgt = wy * (Math.min(x1, xx + 1) - Math.max(x0, xx));
+          const i = (yy * img.width + xx) * 4;
+          for (let c = 0; c < 4; c++) sum[c] += img.data[i + c] * wgt;
+          total += wgt;
+        }
+      }
+      const o = (y * width + x) * 4;
+      for (let c = 0; c < 4; c++) out[o + c] = Math.round(sum[c] / total);
+    }
+  }
+  return { width, height, data: out };
+}
+
+// Re-save a JPG at `quality`, scaled down to `maxWidth` if it is wider.
+export async function recompressJpg(src, dest, { quality = 82, maxWidth } = {}) {
+  const buf = await readFile(src);
+  if (sniff(buf).format !== "jpg") throw new Error("Only JPG files can be re-saved this way.");
+  const img = downscale(decode(buf), maxWidth);
+  const out = jpeg.encode(img, Math.min(95, Math.max(40, quality))).data;
+  await writeFile(dest, out);
+  return { from_bytes: buf.length, to_bytes: out.length, width: img.width, height: img.height };
+}
+
 export async function cropImage(src, dest, { x, y, w, h, designWidth, quality = 85 }) {
   const img = decode(await readFile(src));
   const scale = designWidth ? img.width / designWidth : 1;
-  const left = Math.max(0, Math.round(x * scale));
-  const top = Math.max(0, Math.round(y * scale));
-  const width = Math.min(img.width - left, Math.round(w * scale));
-  const height = Math.min(img.height - top, Math.round(h * scale));
+  // Round inward: a pixel that the crop edge only partly covers is a blend of the layer and its
+  // neighbour, and shows as a thin dark or light line at the image edge.
+  const left = Math.max(0, Math.ceil(x * scale - 1e-6));
+  const top = Math.max(0, Math.ceil(y * scale - 1e-6));
+  const width = Math.min(img.width, Math.floor((x + w) * scale + 1e-6)) - left;
+  const height = Math.min(img.height, Math.floor((y + h) * scale + 1e-6)) - top;
   if (width <= 0 || height <= 0) throw new Error(`The crop area is outside the image (${img.width}x${img.height} px at scale ${scale.toFixed(2)}).`);
   const out = Buffer.alloc(width * height * 4);
   for (let row = 0; row < height; row++) {
@@ -205,7 +248,7 @@ export async function liftBlacks(src, dest, { floor = 18, knee = 64, quality = 9
 }
 
 // PNG → JPG, flattening transparency onto a background color.
-export async function pngToJpg(src, dest, { quality = 82, background = "#ffffff" } = {}) {
+export async function pngToJpg(src, dest, { quality = 82, background = "#ffffff", maxWidth } = {}) {
   const buf = await readFile(src);
   if (sniff(buf).format !== "png") throw new Error("Only PNG files can be converted.");
   const png = PNG.sync.read(buf);
@@ -218,7 +261,8 @@ export async function pngToJpg(src, dest, { quality = 82, background = "#ffffff"
     out[i + 2] = Math.round(png.data[i + 2] * a + bb * (1 - a));
     out[i + 3] = 255;
   }
-  const jpg = jpeg.encode({ data: out, width: png.width, height: png.height }, Math.min(95, Math.max(40, quality)));
+  const img = downscale({ data: out, width: png.width, height: png.height }, maxWidth);
+  const jpg = jpeg.encode(img, Math.min(95, Math.max(40, quality)));
   await writeFile(dest, jpg.data);
-  return { from_bytes: buf.length, to_bytes: jpg.data.length, width: png.width, height: png.height };
+  return { from_bytes: buf.length, to_bytes: jpg.data.length, width: img.width, height: img.height };
 }

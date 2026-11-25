@@ -119,7 +119,7 @@ for (const n of ["setup_status", "install_figma_server", "prepare_figma_bridge",
   check(names.includes(n), `tool ${n} listed`);
 }
 
-for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails"]) check(names.includes(n), `tool ${n} listed`);
+for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails", "remove_unused_images"]) check(names.includes(n), `tool ${n} listed`);
 
 let r = await b.call("setup_status");
 check(!r.isError && r.data.checks?.length >= 6, "setup_status runs", r.text);
@@ -177,6 +177,13 @@ r = await b.call("crop_image", { client: "acme-outdoors", email: "spring-campaig
 check(!r.isError && r.data.width === 600 && r.data.height === 200 && r.data.scale === 2, "crop_image uses 2x scale", r.text);
 r = await b.call("convert_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", file: "design/band.png" });
 check(!r.isError && r.data.to_bytes > 0, "convert_image PNG → JPG", r.text);
+// At scale 2, x 10.3 starts at pixel 20.6: pixel 20 is only partly inside, so the crop starts at 21 and ends at 220.
+r = await b.call("crop_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", source: "design/band.png", dest: "images/edge.png", x: 10.3, y: 5.3, w: 100, h: 50, design_width: 600 });
+check(!r.isError && r.data.width === 199 && r.data.height === 99, "crop_image leaves out edge pixels the crop only partly covers", r.text);
+r = await b.call("convert_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", file: "images/hero.jpg", max_width: 300, quality: 75 });
+check(!r.isError && r.data.to === "images/hero.jpg" && r.data.width === 300 && r.data.height === 100, "convert_image scales a JPG down in place", r.text);
+r = await b.call("convert_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", file: "design/band.png", max_width: 400 });
+check(!r.isError && r.data.width === 400 && r.data.height === 133 && /remove_unused_images/.test(r.data.note || ""), "convert_image scales a PNG down while it converts", r.text);
 
 // A photo with a large near-black area (the Outlook 2021 specks lead), and lift_blacks.
 const writeJpg = (file, w, h, px) => {
@@ -219,6 +226,7 @@ r = await b.call("precheck_email", { client: "acme-outdoors", email: "spring-cam
 check(!r.isError && r.data.passed === false, "precheck fails as expected", r.text);
 const failedText = JSON.stringify(r.data.failed);
 check(/contrast/i.test(failedText) && /#9a9a9a/i.test(failedText), "precheck catches footer contrast");
+check(/nearest passing text colour #[0-9a-f]{6} \([\d.]+:1, (also readable|but a dark frame)/.test(failedText), "precheck suggests the nearest passing colour", failedText);
 check(/absolute https/i.test(failedText), "precheck catches local images");
 check(/hero\.jpg/.test(failedText), "precheck catches a local background image", failedText);
 check(/Preview text is 90/.test(failedText), "precheck catches preview text under 90 characters", failedText);
@@ -228,6 +236,15 @@ check(r.data.warnings.some((w) => /images\/photo\.jpg: Near-black/.test(w)), "pr
 check(!r.data.warnings.some((w) => /unused-dark\.jpg/.test(w)), "precheck skips images the email does not use");
 check(r.data.warnings.some((w) => /^Dark mode, Gmail App Android/.test(w) && /Band text on yellow/.test(w)), "precheck warns about dark text on a mid-tone band in Gmail Android dark", JSON.stringify(r.data.warnings));
 check(!/Band text on yellow/.test(failedText), "the band passes light-mode contrast, so only the dark warning names it");
+// Fake links are never fetched, so the URL checks run offline here: example.com is skipped and the images are local.
+r = await b.call("precheck_email", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", check_urls: true });
+check(!r.isError && !r.data.checks.some((c) => c.check === "Link responds"), "precheck does not fetch example.com links", JSON.stringify(r.data.checks?.filter((c) => /Link/.test(c.check))));
+
+r = await b.call("remove_unused_images", { client: "acme-outdoors", email: "spring-campaign/spring-teaser" });
+check(!r.isError && r.data.unused.includes("images/edge.png") && r.data.unused.includes("images/unused-dark.jpg") && !r.data.unused.includes("images/logo.png"), "remove_unused_images lists the files email.mjml does not use", r.text);
+r = await b.call("remove_unused_images", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", files: ["images/edge.png", "images/logo.png", "design/band.png", "images/../email.json"] });
+const emailImages = path.join(ws, "clients", "acme-outdoors", "emails", "spring-campaign", "spring-teaser", "images");
+check(!r.isError && r.data.removed.join() === "images/edge.png" && r.data.refused.length === 3 && !existsSync(path.join(emailImages, "edge.png")) && existsSync(path.join(emailImages, "logo.png")), "remove_unused_images deletes only unused files in images/", r.text);
 
 r = await b.call("set_test_values", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", values: [{ label: "Shop link", value: "https://example.com/shop" }, { label: "Footer address", value: "100 Sample Street" }] });
 check(!r.isError && r.data.test_values.length === 2, "set_test_values", r.text);
@@ -294,6 +311,15 @@ if (!r.isError) {
   check(r.isError && /No emails in the group/.test(r.text), "check_emails refuses an empty group", r.text);
   const agent = readFileSync(path.join(root, "agents", "email-builder.md"), "utf8");
   check(/^name: email-builder$/m.test(agent) && /^model: inherit$/m.test(agent) && /figma_get_selection/.test(agent), "email-builder agent is defined and keeps off the shared selection");
+  const listed = [...agent.matchAll(/mcp__plugin_emailqa_email-build__([a-z_]+)/g)].map((m) => m[1]);
+  check(listed.length >= 10 && listed.every((n) => names.includes(n)) && listed.includes("import_file"), "email-builder loads only tools that exist, import_file included", listed.filter((n) => !names.includes(n)).join(", "));
+
+  r = await b.call("set_test_values", { client: C, email: "spring-campaign/spring-launch", values: [{ label: "Shop link", value: "https://example.com/shop" }] });
+  r = await b.call("set_test_values", { client: C, email: "spring-campaign/spring-launch", remove: ["https://example.com/shop"], values: [{ label: "Shop link", value: "https://example.com/?shop" }] });
+  check(!r.isError && r.data.removed === 1 && r.data.test_values.length === 1 && r.data.test_values[0].value === "https://example.com/?shop", "set_test_values swaps a value in one call", r.text);
+
+  const cmp = await fetch(teaser.compare).then((x) => x.text());
+  check(/scrollHeight/.test(cmp), "compare frames grow to the height of the email");
 }
 
 r = await b.call("check_figma_file", { client: "acme-outdoors", file: "https://www.figma.com/design/2QGsznyC6myiv41zPJlSxu/x" });
@@ -316,6 +342,20 @@ writeFileSync(path.join(dirs.src, "layout.json"), JSON.stringify(layout));
 r = await b.call("summarize_design", { file_path: path.join(dirs.src, "layout.json") });
 check(!r.isError && /@40,120 520x300/.test(r.data.outline) && /BLEND:LINEAR_BURN/.test(r.data.outline), "summarize_design shows positions and blend modes", r.text);
 check(r.data.warnings?.[0]?.startsWith("ALL TEXT IS CONVERTED"), "outlined-text warning comes first");
+const layout2 = { emailqaOutline: 1, frame: { id: "2:1", name: "Email", w: 600, h: 900 }, liveText: 2, outlinedTextGroups: 0, nodes: [
+  { id: "2:1", name: "Email", type: "FRAME", depth: 0, x: 0, y: 0, w: 600, h: 900, fill: "#ffffff" },
+  { id: "2:2", name: "Notice", type: "FRAME", depth: 1, x: 40, y: 100, w: 520, h: 60, fill: "#e6e6e6", stroke: "#c60314 2px" },
+  { id: "2:3", name: "Shop", type: "TEXT", depth: 2, x: 60, y: 120, w: 100, h: 20, text: "ACMEOUTDOORS.COM", font: "Inter Bold", size: 12, decoration: "UNDERLINE", link: "https://acmeoutdoors.com/" },
+  { id: "2:4", name: "Mixed", type: "TEXT", depth: 2, x: 60, y: 140, w: 300, h: 20, text: "Read the terms here", runs: [
+    { text: "Read the terms ", font: "Inter Regular", size: 9, fill: "#222222" },
+    { text: "here", font: "Inter Bold", size: 9, fill: "#0071ce", decoration: "UNDERLINE", link: "https://acmeoutdoors.com/terms" },
+  ] },
+] };
+writeFileSync(path.join(dirs.src, "layout2.json"), JSON.stringify(layout2));
+r = await b.call("summarize_design", { file_path: path.join(dirs.src, "layout2.json") });
+check(!r.isError && /stroke:#c60314 2px/.test(r.data.outline) && /UNDERLINE/.test(r.data.outline), "summarize_design shows borders and underlines", r.text);
+check(/MIXED 2 runs/.test(r.data.outline) && /run Inter Bold 9px #0071ce UNDERLINE link https:\/\/acmeoutdoors\.com\/terms "here"/.test(r.data.outline), "summarize_design shows each style run of a mixed text layer", r.data.outline);
+check(r.data.links_in_design?.length === 2 && r.data.links_in_design.some((l) => l.url === "https://acmeoutdoors.com/terms" && l.text === "here"), "summarize_design lists the links set in Figma", JSON.stringify(r.data.links_in_design));
 
 const oldProject = process.env.EMAILQA_OLD_PROJECT;
 if (oldProject && existsSync(path.join(oldProject, "pipeline.json"))) {

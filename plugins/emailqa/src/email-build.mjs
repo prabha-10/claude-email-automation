@@ -41,11 +41,11 @@ import {
 } from "./lib/workspace.mjs";
 import { runSetupChecks } from "./lib/setup-checks.mjs";
 import { installFigmaRuntime, prepareBridgeManifest } from "./lib/figma-runtime.mjs";
-import { cropImage, imageInfo, liftBlacks, pngToJpg } from "./lib/images.mjs";
-import { DARK_MODES, simulateDark } from "./lib/dark-sim.mjs";
+import { cropImage, imageInfo, liftBlacks, pngToJpg, recompressJpg } from "./lib/images.mjs";
+import { DARK_MODES, darkColor, simulateDark } from "./lib/dark-sim.mjs";
 // imageInfo here reads a file path; the handoff one fingerprints bytes (format, size, SHA-256).
 import { accountIdOf, imageInfo as fileFingerprint, imageUrlsIn, matchLinks, sha256, swapLinks } from "./lib/handoff.mjs";
-import { checkContrast } from "./lib/contrast.mjs";
+import { checkContrast, contrastRatio, nearestPassingColor, parseColor } from "./lib/contrast.mjs";
 import { ensurePreviewServer, openInBrowser, overviewUrl, previewUrls } from "./lib/preview.mjs";
 import { summarize } from "./lib/design.mjs";
 import { CLIENT_BEHAVIOR, KINDS, addLessons, loadLessons, matchClientBehavior, matchLessons } from "./lib/lessons.mjs";
@@ -574,20 +574,22 @@ tool(
       .array(z.object({ label: z.string(), value: z.string().min(3) }))
       .optional()
       .describe('e.g. [{"label":"Footer address","value":"100 Sample Street"},{"label":"Social links","value":"https://example.com/social"}]'),
+    remove: z.array(z.string()).optional().describe("Labels or values to remove, for example an old fake link you replaced. Runs before values are added."),
     clear: z.boolean().default(false).describe("Remove all recorded test values (after the real values are in)"),
   },
-  async ({ client, email, values, clear }) => {
+  async ({ client, email, values, remove, clear }) => {
     const e = await requireEmail(client, email);
     if (clear) e.record.testValues = [];
+    const before = (e.record.testValues ||= []).length;
+    if (remove?.length) e.record.testValues = e.record.testValues.filter((x) => !remove.includes(x.label) && !remove.includes(x.value));
+    const removed = before - e.record.testValues.length;
     for (const v of values || []) {
-      if (!(e.record.testValues ||= []).some((x) => x.value === v.value)) e.record.testValues.push({ ...v, added: now() });
+      if (!e.record.testValues.some((x) => x.value === v.value)) e.record.testValues.push({ ...v, added: now() });
     }
-    (e.record.history ||= []).push({
-      at: now(),
-      note: clear ? "Test values cleared" : `Test values recorded: ${(values || []).map((v) => v.label).join(", ")}`,
-    });
+    const notes = [clear && "Test values cleared", removed && `Test values removed: ${removed}`, values?.length && `Test values recorded: ${values.map((v) => v.label).join(", ")}`].filter(Boolean);
+    (e.record.history ||= []).push({ at: now(), note: notes.join(". ") || "Test values unchanged" });
     await saveRecord(e.recordFile, e.record);
-    return { test_values: e.record.testValues };
+    return { test_values: e.record.testValues, ...(remove?.length && { removed }) };
   }
 );
 
@@ -653,21 +655,69 @@ tool(
 
 tool(
   "convert_image",
-  "Convert a PNG in the email folder to JPG (smaller for photos), flattening any transparency onto a background color.",
+  "Make an image in the email folder smaller. A PNG becomes a JPG next to it (smaller for photos), with transparency flattened onto a background color. A JPG is saved again in place. max_width scales the image down: 2x the display width is enough, for example 1200 for an image shown 600px wide. Remove the old PNG afterwards with remove_unused_images.",
   {
     client: clientArg,
     email: emailArg,
-    file: z.string().describe('e.g. "images/hero.png"'),
+    file: z.string().describe('e.g. "images/hero.png" or "images/hero.jpg"'),
     quality: z.number().int().min(40).max(95).default(82),
-    background: z.string().default("#ffffff").describe("Hex color behind transparent areas"),
+    max_width: z.number().int().min(50).max(4000).optional().describe("Scale down to this width in px if the image is wider"),
+    background: z.string().default("#ffffff").describe("Hex color behind transparent areas (PNG only)"),
   },
-  async ({ client, email, file, quality, background }) => {
+  async ({ client, email, file, quality, max_width, background }) => {
     const e = await requireEmail(client, email);
     const src = await within(e.emailDir, file);
+    const rel = (p) => path.relative(e.emailDir, p).split(path.sep).join("/");
+    if (/\.jpe?g$/i.test(src)) {
+      const r = await recompressJpg(src, src, { quality, maxWidth: max_width });
+      return { from: file, to: rel(src), ...r };
+    }
     const dest = src.replace(/\.png$/i, ".jpg");
-    if (dest === src) throw new Error("Only .png files can be converted.");
-    const r = await pngToJpg(src, dest, { quality, background });
-    return { from: file, to: path.relative(e.emailDir, dest).split(path.sep).join("/"), ...r };
+    if (dest === src) throw new Error("Only .png and .jpg files can be converted.");
+    const r = await pngToJpg(src, dest, { quality, background, maxWidth: max_width });
+    return { from: file, to: rel(dest), ...r, note: `Point email.mjml at ${rel(dest)}, then remove ${file} with remove_unused_images.` };
+  }
+);
+
+// Images that email.mjml uses: local ../images/<file> links, and files whose hosted link is in email.mjml.
+async function usedImages(e) {
+  const mjml = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
+  const used = new Set([...mjml.matchAll(/\.\.\/images\/([^"'()\s<>?#]+)/g)].map((m) => `images/${decodeURIComponent(m[1])}`));
+  for (const [rel, url] of Object.entries(e.record.klaviyo?.images || {})) if (mjml.includes(url)) used.add(rel);
+  return used;
+}
+
+tool(
+  "remove_unused_images",
+  "List the files in the email's images/ folder that email.mjml does not use, or delete the ones you name. It refuses a file that email.mjml uses. Only images/ is touched; design/ keeps the Figma reference. host_images uploads only used files, so leftovers are clutter, not a risk.",
+  {
+    client: clientArg,
+    email: emailArg,
+    files: z.array(z.string()).optional().describe('Files to delete, e.g. ["images/hero.png"]. Leave out to only list the unused files.'),
+  },
+  async ({ client, email, files }) => {
+    const e = await requireEmail(client, email);
+    const used = await usedImages(e);
+    const all = (await readdir(path.join(e.emailDir, "images"), { withFileTypes: true }).catch(() => [])).filter((d) => d.isFile()).map((d) => `images/${d.name}`);
+    const unused = all.filter((f) => !used.has(f));
+    if (!files?.length) return { unused, used: [...used].filter((f) => all.includes(f)) };
+    const removed = [];
+    const refused = [];
+    for (const f of files) {
+      const rel = f.replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!rel.startsWith("images/") || rel.includes("..")) refused.push({ file: f, why: "Only files in images/ can be removed." });
+      else if (used.has(rel)) refused.push({ file: f, why: "email.mjml uses it." });
+      else if (!all.includes(rel)) refused.push({ file: f, why: "No such file in images/." });
+      else {
+        await rm(await within(e.emailDir, rel));
+        removed.push(rel);
+      }
+    }
+    if (removed.length) {
+      (e.record.history ||= []).push({ at: now(), note: `Unused images removed: ${removed.join(", ")}` });
+      await saveRecord(e.recordFile, e.record);
+    }
+    return { removed, refused, unused_left: unused.filter((f) => !removed.includes(f)) };
   }
 );
 
@@ -856,21 +906,42 @@ async function precheckOne(e, { check_urls = true, checkUrl = urlChecker() } = {
   add(emptyLinks.length === 0, "No empty (#) links", emptyLinks.length ? `${emptyLinks.length} found` : undefined);
 
   if (check_urls) {
+    // Fake links (example.com is reserved for examples, or a recorded test value) are never fetched:
+    // their answer means nothing, and a 404 from them only starts a fix loop.
+    const isTestLink = (u) => /^https?:\/\/([a-z0-9-]+\.)*example\.(com|org|net)([/?#:]|$)/i.test(u) || testValues.some((t) => t.value === u);
+    const realLinks = webLinks.filter((u) => !isTestLink(u));
     const imageUrls = srcs.filter((s) => s.startsWith("https://"));
-    const [imageStatus, linkStatus] = await Promise.all([Promise.all(imageUrls.map(checkUrl)), Promise.all(webLinks.map(checkUrl))]);
+    const [imageStatus, linkStatus] = await Promise.all([Promise.all(imageUrls.map(checkUrl)), Promise.all(realLinks.map(checkUrl))]);
     imageUrls.forEach((u, i) => add(imageStatus[i] === 200, "Image loads", `${imageStatus[i]} ${u}`));
-    webLinks.forEach((u, i) => {
+    realLinks.forEach((u, i) => {
       const s = linkStatus[i];
       add(typeof s === "number" && s >= 200 && s < 400, "Link responds", `${s} ${u}`);
     });
   }
 
   const contrast = checkContrast(html);
+  // For each failing pair, the nearest text colour that passes, preferably one that also stays readable
+  // in the Gmail App Android and Outlook Windows dark frames. A suggestion for the designer, not a fix.
+  const darkOk = (bg, required) => (hex) =>
+    ["gmail-android", "outlook-windows"].every((m) => {
+      const t = parseColor(darkColor(hex, m, "text"));
+      const b = parseColor(darkColor(bg, m, "background"));
+      return !t || !b || contrastRatio(t, b) + 1e-9 >= required;
+    });
+  const hint = (i) => {
+    const s = nearestPassingColor(i.color, i.background, i.required, darkOk(i.background, i.required));
+    if (!s) return "";
+    return `; nearest passing text colour ${s.color} (${s.ratio}:1${
+      s.dark_ok
+        ? ", also readable in the Gmail and Outlook dark frames"
+        : ", but a dark frame still fails: no shade of this colour passes there, so the background is the part to change"
+    })`;
+  };
   add(
     contrast.issues.length === 0,
     "Text contrast meets WCAG AA (4.5:1, or 3:1 for large text)",
     contrast.issues.length
-      ? contrast.issues.map((i) => `${i.color} on ${i.background} = ${i.ratio}:1 (needs ${i.required}:1), e.g. "${i.examples[0]}"`).join("; ")
+      ? contrast.issues.map((i) => `${i.color} on ${i.background} = ${i.ratio}:1 (needs ${i.required}:1), e.g. "${i.examples[0]}"${hint(i)}`).join("; ")
       : `${contrast.text_nodes_checked} text runs checked`
   );
 

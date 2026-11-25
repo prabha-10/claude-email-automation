@@ -31,7 +31,7 @@ The dark frames copy the colour change of each client. They are approximations, 
 
 `host_images`. One call uploads every local image that `email.mjml` uses, including CSS and VML background images. It reuses files that are already uploaded, re-uploads files that changed, and rewrites the links in `email.mjml`. If it returns `not_hosted`, fix those files and call it again.
 
-Then `compile_email` and `precheck_email` again. Everything must pass now. Warnings about test values and test variants are fine for a test send.
+Then `compile_email` and `precheck_email` again. Everything must pass now. Warnings about test values and test variants are fine for a test send. If the build report listed a design colour for the designer, its contrast failure is also fine for a test send. Litmus then shows the same failure, and the user decides.
 
 ## 3. Publish
 

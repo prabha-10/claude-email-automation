@@ -15,6 +15,7 @@ Learned from real Litmus runs. Follow all of them unless the user says otherwise
 - Load web fonts with `mj-font` (Google Fonts) and always give web-safe fallbacks, for example `'Josefin Sans', Arial, Helvetica, sans-serif` and `'Playfair Display', Georgia, 'Times New Roman', serif`. Outlook and Gmail usually show the fallback.
 - Use 6-digit hex colors only.
 - Set font sizes and line heights in px. Mobile overrides go in `mj-style` media queries targeting a `css-class`, for example `.h1 div { font-size: 40px !important; }`.
+- Small text: after the scaling in build-email step 3, round font sizes to whole px. Text that comes out below 10px becomes 10px. List each change in the report. This is a house choice, so that every build makes the same one, and the user can change it.
 - The main headline is a real `<h1>` inside `mj-text`, with explicit inline styles (`margin:0; font-family:…; font-size:…; line-height:…; font-weight:…; color:…`), not `inherit`, because Outlook ignores `inherit`. Add the mobile override for `.h1 h1` too.
 
 ## Images
@@ -27,7 +28,10 @@ Learned from real Litmus runs. Follow all of them unless the user says otherwise
 ## Buttons
 
 - Use `mj-button`, never an image of a button.
-- The tap target must be at least 44px tall: `inner-padding` plus `line-height`, for example `inner-padding="10px 24px"` with `line-height="24px"`.
+- A standalone button is at least 44px tall: `inner-padding` plus `line-height`, for example `inner-padding="10px 24px"` with `line-height="24px"`. 44px is the WCAG target size at level AAA (2.5.5).
+- A button or pill inside a thin band from the design: keep the band height from the design. Keep the pill at least 24px tall, the WCAG 2.2 minimum at level AA (2.5.8). Do not grow the band to reach 44px. Say the pill height in the report.
+- `mj-button` puts `padding="10px 25px"` around the button by default. In a narrow column, this padding narrows the button and a short label wraps. Set `padding="0"` on the button, and let the section or column own the gap.
+- Do not give `mj-button` a fixed width in px that is wider than the mobile column. At 375px, a 420px button runs off the screen. Use `width="100%"` in a padded column, or leave the width out.
 - Rounded corners become square in Outlook 2016 to 2021 (Word engine). Accept this. If the user asks for round corners there, build a VML button.
 
 ## Icon + text rows (for example date, time, location)
@@ -44,6 +48,21 @@ The icon cell must set `line-height` equal to the icon height, or Outlook 2016 t
 ```
 
 Repeat the font family inline on text cells. Outlook does not inherit fonts into tables.
+
+## Side by side
+
+- An icon next to its text: the presentation table above.
+- Columns that stay side by side on mobile, for example two small buttons: put the `mj-column` elements inside `mj-group`. An `mj-group` does not stack.
+- Columns that stack on mobile, for example cards: plain `mj-column` elements, as in "Mobile" below.
+
+```xml
+<mj-section padding="16px 24px">
+  <mj-group>
+    <mj-column width="50%"><mj-button href="…" padding="0 6px 0 0" width="100%">Left</mj-button></mj-column>
+    <mj-column width="50%"><mj-button href="…" padding="0 0 0 6px" width="100%">Right</mj-button></mj-column>
+  </mj-group>
+</mj-section>
+```
 
 ## Spacing
 
@@ -62,6 +81,7 @@ Give each gap exactly one owner. Do not stack section padding and column padding
 ## Contrast
 
 - Body and footer text need at least 4.5:1 contrast with their background (3:1 for text 24px and up, or 18.66px bold). Light-grey footers on off-white often fail. `precheck_email` checks this.
+- If a colour from the design fails, keep it. List it in the report for the designer, with the nearest passing text colour that `precheck_email` gives. A darker text colour can fail the Gmail App Android dark frame, and the suggestion says whether it stays readable there.
 
 ## Dark mode
 
@@ -161,6 +181,7 @@ Frames without auto-layout (header and hero text placed freely) are rebuilt as s
 
 - Personalization: `{{ first_name|default:"there" }}`.
 - Footer must have an unsubscribe link, `<a href="{% unsubscribe_link %}">Unsubscribe</a>`, and a physical postal address: `{{ organization.full_address }}` or the sender's real address. Litmus fails the compliance check without an address.
+- If the design has no footer or no address, add one small footer row in the design's smallest text style and colours: `{{ organization.full_address }}`, then `Unsubscribe` (`{% unsubscribe_link %}`) and `Manage preferences` (`{% manage_preferences_link %}`). Klaviyo advises a preferences link next to the unsubscribe link. This is not invented copy, because the law requires the address and the unsubscribe link. Say it in the report. The local preview shows the raw tags, and `render_template` in the test step fills them.
 - Optional: `<a href="{% web_view_link %}">View in browser</a>`, `{{ organization.name }}`.
 - Never put Klaviyo tags inside HTML comments. MJML keeps comments, and Klaviyo processes tags inside them.
 - Klaviyo merges `<style>` blocks and turns font `<link>` tags into `@import`. This is fine.
@@ -172,3 +193,9 @@ Absolute positioning, overlapping elements, rotated elements and blend modes. Si
 ## Test values
 
 Record fake links and sample addresses for tests with `set_test_values`. The pre-check then flags them until the real values are in. Do not hide them in comments.
+
+## Links
+
+- Text that names a website (for example ACMEOUTDOORS.COM) or reads like a link (Shop now, Learn more) is a link.
+- Use the real URL from `links_in_design` in the `summarize_design` result, or from the user. If there is none, use a fake link of the form `https://example.com/?<what>`, for example `https://example.com/?shop`, and record it with `set_test_values`.
+- The pre-check does not fetch example.com links or recorded test values. To change a recorded value, call `set_test_values` with `remove` and `values` in one call.

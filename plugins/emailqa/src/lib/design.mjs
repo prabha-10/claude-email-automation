@@ -22,6 +22,9 @@ function fromLayout(data, maxLines) {
   const lines = [];
   const images = [];
   const blends = [];
+  const links = [];
+  const runText = (r) =>
+    [r.font, r.size && `${r.size}px`, r.fill, r.decoration, r.link && `link ${r.link}`].filter(Boolean).join(" ") + ` "${clip(r.text, 80)}"`;
   for (const n of data.nodes) {
     if (lines.length >= maxLines) break;
     const pos = n.x !== undefined ? ` @${n.x},${n.y} ${n.w}x${n.h}` : "";
@@ -29,6 +32,7 @@ function fromLayout(data, maxLines) {
     if (n.layout) bits.push(`${n.layout.mode} pad[${n.layout.pad.join(",")}] gap${n.layout.gap}`);
     if (n.absolute) bits.push("ABSOLUTE");
     if (n.fill) bits.push(`fill:${n.fill}`);
+    if (n.stroke) bits.push(`stroke:${n.stroke}`);
     if (n.radius) bits.push(`r${n.radius}`);
     if (n.opacity !== undefined) bits.push(`op${n.opacity}`);
     if (n.blend) bits.push(`BLEND:${n.blend}`);
@@ -37,21 +41,37 @@ function fromLayout(data, maxLines) {
     if (n.hidden) bits.push("HIDDEN");
     if (n.outlinedText) bits.push("[TEXT AS OUTLINES]");
     if (n.text !== undefined) {
-      const font = [n.font, n.size && `${n.size}px`, n.lineHeight && `lh ${n.lineHeight}`, n.letterSpacing && `ls ${n.letterSpacing}`, n.align, n.textCase]
+      const font = [
+        n.font,
+        n.size && `${n.size}px`,
+        n.lineHeight && `lh ${n.lineHeight}`,
+        n.letterSpacing && `ls ${n.letterSpacing}`,
+        n.align,
+        n.textCase,
+        n.decoration,
+        n.link && `link ${n.link}`,
+        n.runs && `MIXED ${n.runs.length} runs`,
+      ]
         .filter(Boolean)
         .join(" ");
       bits.push(`TEXT ${font} "${clip(n.text, 160)}"`);
     }
+    for (const u of [n.link, ...(n.runs || []).map((r) => r.link)].filter(Boolean)) {
+      if (!links.some((l) => l.url === u)) links.push({ url: u, text: clip(n.runs?.find((r) => r.link === u)?.text || n.text, 60) });
+    }
     if (/IMAGE/.test(n.fill || "")) images.push({ id: n.id, name: n.name, size: `${n.w}x${n.h}`, at: `${n.x},${n.y}`, ...(n.blend && { blend: n.blend }) });
     if (n.blend) blends.push({ id: n.id, name: n.name, blend: n.blend });
-    lines.push(`${"  ".repeat(n.depth)}${n.type} ${n.id} "${clip(n.name, 200)}"${pos} ${bits.join(" ")}`.trimEnd());
+    const indent = "  ".repeat(n.depth);
+    lines.push(`${indent}${n.type} ${n.id} "${clip(n.name, 200)}"${pos} ${bits.join(" ")}`.trimEnd());
+    for (const r of n.runs || []) if (lines.length < maxLines) lines.push(`${indent}  run ${runText(r)}`);
   }
   return {
     frame: data.frame,
     outline: lines.join("\n"),
-    truncated: lines.length < data.nodes.length,
+    truncated: lines.length >= maxLines,
     image_nodes: images,
     blend_mode_nodes: blends,
+    links_in_design: links,
     live_text_nodes: data.liveText,
     text_as_outlines_groups: data.outlinedTextGroups,
   };
