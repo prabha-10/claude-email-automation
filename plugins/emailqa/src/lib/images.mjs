@@ -69,11 +69,49 @@ function pngAnalysis(buf) {
   };
 }
 
+// Near-black pixels in photos. Outlook 2021 on Windows showed white specks on the near-black areas of JPEG
+// photos in two builds (lessons.md). The cause is not confirmed. The lead: the photo with specks had 15% of
+// its pixels at luma 6 or lower, and the photo without specks had a darkest luma of 17. Luma is Rec. 601 Y'
+// on 0-255, the value JPEG stores.
+export const NEAR_BLACK_LUMA = 6;
+export const NEAR_BLACK_WARN_SHARE = 0.02;
+const luma = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+
+export function lumaStats(img) {
+  const { width, height, data } = img;
+  const step = Math.max(1, Math.floor((width * height) / 250000));
+  let n = 0;
+  let near = 0;
+  let min = 255;
+  for (let p = 0; p < width * height; p += step) {
+    const i = p * 4;
+    if (data[i + 3] < 200) continue; // transparent pixels sit on the email background, not in the photo
+    const y = luma(data[i], data[i + 1], data[i + 2]);
+    n++;
+    if (y <= NEAR_BLACK_LUMA) near++;
+    if (y < min) min = y;
+  }
+  return { min_luma: n ? Math.round(min) : null, near_black_share: n ? +(near / n).toFixed(3) : 0 };
+}
+
+const nearBlackWarning = (s) =>
+  `Near-black photo areas (dark pixels): ${(s.near_black_share * 100).toFixed(1)}% of the pixels are at luma ${NEAR_BLACK_LUMA} or lower. ` +
+  "Outlook 2021 showed white specks on such areas in two builds. The cause is not confirmed. " +
+  "If Outlook 2021 matters, test a copy made with lift_blacks (floor 18) as a variant next to this photo.";
+
 export async function imageInfo(file) {
   const buf = await readFile(file);
   const info = { file: path.basename(file), bytes: buf.length, kb: +(buf.length / 1024).toFixed(1), ...sniff(buf) };
   const warnings = [];
   if (["webp", "svg"].includes(info.format)) warnings.push(`${info.format.toUpperCase()} isn't supported by many email clients; use PNG or JPG.`);
+  if (info.format === "jpg") {
+    try {
+      Object.assign(info, lumaStats(decode(buf)));
+      if (info.near_black_share >= NEAR_BLACK_WARN_SHARE) warnings.push(nearBlackWarning(info));
+    } catch (e) {
+      warnings.push(`Couldn't decode the JPG: ${e.message}`);
+    }
+  }
   if (info.format === "png") {
     try {
       Object.assign(info, pngAnalysis(buf));
@@ -84,6 +122,11 @@ export async function imageInfo(file) {
       }
       if (!info.has_transparency && buf.length > 150 * 1024) {
         warnings.push("Large PNG without transparency: a JPG would be much smaller (convert_image).");
+      }
+      if (!info.has_transparency) {
+        // An opaque PNG is a photo or a flat graphic. Only a photo-like share of near-black pixels counts.
+        Object.assign(info, lumaStats(decode(buf)));
+        if (info.near_black_share >= NEAR_BLACK_WARN_SHARE && buf.length > 60 * 1024) warnings.push(nearBlackWarning(info));
       }
     } catch (e) {
       warnings.push(`Couldn't decode the PNG: ${e.message}`);
@@ -138,6 +181,27 @@ export async function cropImage(src, dest, { x, y, w, h, designWidth, quality = 
   const bytes = encode({ width, height, data: out }, dest, quality);
   await writeFile(dest, bytes);
   return { width, height, scale: +scale.toFixed(3), bytes: bytes.length };
+}
+
+// Raise the darkest pixels of a photo so its darkest luma is about `floor`. Pixels darker than `knee` move up
+// along a straight line from floor (at luma 0) to knee (at luma knee), so mid-tones and highlights stay as they
+// are. The same shift goes to R, G and B, which keeps the colour of dark areas. Transparency is kept for PNG.
+export async function liftBlacks(src, dest, { floor = 18, knee = 64, quality = 90 } = {}) {
+  if (!(floor > 0 && floor < knee && knee <= 128)) throw new Error("floor must be above 0 and below knee, and knee at most 128.");
+  const buf = await readFile(src);
+  const img = decode(buf);
+  const before = lumaStats(img);
+  const out = Buffer.from(img.data);
+  const slope = (knee - floor) / knee;
+  for (let i = 0; i < out.length; i += 4) {
+    const y = luma(out[i], out[i + 1], out[i + 2]);
+    if (y >= knee) continue;
+    const shift = floor + y * slope - y;
+    for (let c = 0; c < 3; c++) out[i + c] = Math.max(0, Math.min(255, Math.round(out[i + c] + shift)));
+  }
+  const bytes = encode({ width: img.width, height: img.height, data: out }, dest, quality);
+  await writeFile(dest, bytes);
+  return { width: img.width, height: img.height, bytes: bytes.length, before, after: lumaStats(decode(bytes)) };
 }
 
 // PNG → JPG, flattening transparency onto a background color.

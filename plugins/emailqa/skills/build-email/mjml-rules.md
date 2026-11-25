@@ -12,9 +12,9 @@ Learned from real Litmus runs. Follow all of them unless the user says otherwise
 
 ## Type and color
 
-- Load web fonts with `mj-font` (Google Fonts) and always give web-safe fallbacks, e.g. `'Josefin Sans', Arial, Helvetica, sans-serif` and `'Playfair Display', Georgia, 'Times New Roman', serif`. Outlook and Gmail usually show the fallback.
+- Load web fonts with `mj-font` (Google Fonts) and always give web-safe fallbacks, for example `'Josefin Sans', Arial, Helvetica, sans-serif` and `'Playfair Display', Georgia, 'Times New Roman', serif`. Outlook and Gmail usually show the fallback.
 - Use 6-digit hex colors only.
-- Set font sizes and line heights in px. Mobile overrides go in `mj-style` media queries targeting a `css-class`, e.g. `.h1 div { font-size: 40px !important; }`.
+- Set font sizes and line heights in px. Mobile overrides go in `mj-style` media queries targeting a `css-class`, for example `.h1 div { font-size: 40px !important; }`.
 - The main headline is a real `<h1>` inside `mj-text`, with explicit inline styles (`margin:0; font-family:…; font-size:…; line-height:…; font-weight:…; color:…`), not `inherit`, because Outlook ignores `inherit`. Add the mobile override for `.h1 h1` too.
 
 ## Images
@@ -27,14 +27,14 @@ Learned from real Litmus runs. Follow all of them unless the user says otherwise
 ## Buttons
 
 - Use `mj-button`, never an image of a button.
-- The tap target must be at least 44px tall: `inner-padding` plus `line-height`, e.g. `inner-padding="10px 24px"` with `line-height="24px"`.
-- Rounded corners become square in Outlook 2016–2021 (Word engine). That's acceptable unless the user asks for a VML button.
+- The tap target must be at least 44px tall: `inner-padding` plus `line-height`, for example `inner-padding="10px 24px"` with `line-height="24px"`.
+- Rounded corners become square in Outlook 2016 to 2021 (Word engine). Accept this. If the user asks for round corners there, build a VML button.
 
-## Icon + text rows (e.g. date, time, location)
+## Icon + text rows (for example date, time, location)
 
-Use `mj-text` containing a `<table role="presentation" cellpadding="0" cellspacing="0" border="0">`, not `mj-table` (it doesn't mark tables as presentation-only, which Litmus flags).
+Use `mj-text` containing a `<table role="presentation" cellpadding="0" cellspacing="0" border="0">`, not `mj-table`. `mj-table` does not mark tables as presentation-only, and Litmus flags that.
 
-The icon cell must set `line-height` equal to the icon height, or Outlook 2016–2021 crops the image:
+The icon cell must set `line-height` equal to the icon height, or Outlook 2016 to 2021 crops the image:
 
 ```html
 <td width="36" style="width:36px;line-height:36px;font-size:0;mso-line-height-rule:exactly;vertical-align:middle;">
@@ -43,11 +43,11 @@ The icon cell must set `line-height` equal to the icon height, or Outlook 2016�
 <td style="padding-left:12px;vertical-align:middle;font-family:…;font-size:14px;line-height:16px;color:…;">…</td>
 ```
 
-Repeat the font family inline on text cells; Outlook doesn't inherit fonts into tables.
+Repeat the font family inline on text cells. Outlook does not inherit fonts into tables.
 
 ## Spacing
 
-Give each gap exactly one owner. Don't stack section padding and column padding for the same gap, or it doubles. For a grid of items, let each item carry its bottom gap and give the last row's section the remaining bottom padding.
+Give each gap exactly one owner. Do not stack section padding and column padding for the same gap, or it doubles. For a grid of items, let each item carry its bottom gap and give the last row's section the remaining bottom padding.
 
 ## Mobile
 
@@ -59,11 +59,99 @@ Give each gap exactly one owner. Don't stack section padding and column padding 
 - Hyphenated words (to-do, e-mail, check-in) can split across lines in fallback fonts (Arial in Gmail and the new Outlook). Wrap them in `<span class="nowrap">` with `.nowrap { white-space: nowrap; }`.
 - iOS turns addresses, dates, times and phone numbers into blue underlined links. Add the `a[x-apple-data-detectors]` rule from the starter so they keep the design's colour, and give footer links an explicit colour.
 
-## Contrast and dark mode
+## Contrast
 
-- Body and footer text need at least 4.5:1 contrast with their background (3:1 for text 24px and up, or 18.66px bold). Light-grey footers on off-white often fail; `precheck_email` checks this.
-- Transparent PNGs with dark parts (logos, icons) disappear on dark backgrounds in dark mode. Give them a light outline or a solid background. `image_info` and `precheck_email` warn about them.
-- Check the simulated dark view in `preview_email`.
+- Body and footer text need at least 4.5:1 contrast with their background (3:1 for text 24px and up, or 18.66px bold). Light-grey footers on off-white often fail. `precheck_email` checks this.
+
+## Dark mode
+
+Read `library/client-behavior.md` before you style colours, logos or dark areas. It says what each email client does in dark mode, with sources. The rules below follow from it. Add a fix marked "Not tested by us" as a Litmus variant next to the plain version. Do not make it the only change.
+
+- Give `mj-body` and every `mj-section` a background colour. Apple Mail shows its dark window behind an area without one, and dark text disappears there.
+- By default, leave out dark styles and the `color-scheme` meta tags. Without the meta tags, Apple Mail shows the light design unchanged. With the meta tags and no dark styles, Apple Mail inverts some colours. When the design has a dark version, or the user asks for one, add the dark styles below.
+- Very dark text on a mid-tone coloured band fails in Gmail App Android. Gmail lightens the text and leaves the band, so the text turns pale. In black-friday, `#032d06` text on a `#f9ca0a` band turned pale mint. American Express puts the limit at about 20% grey (`#cccccc`). The yellow `#f9ca0a` has about the same luminance.
+  - Do not repeat the band colour as `bgcolor` or as a small tiled background image. Both failed.
+  - Test these as variants: the band copy as an image with the band colour and the copy in `alt`, or the Gmail `light only` tag below.
+  - Say in the report that the band is at risk in Gmail App Android.
+- Logos and icons on transparent PNGs: give the dark parts a thin light outline or glow, or put them on a solid plate. One file must work on white and on dark, because Gmail and Outlook on Windows ignore an image swap. `image_info` and `precheck_email` warn about these files.
+- Never use `<picture>` for a light and dark image swap. Gmail replaces it with `<u></u>`.
+- Apple Mail can flip pure white `#ffffff` and pure black `#000000`. If it flips one, use `#fffffe` or `#010101` instead.
+- Check the dark frames in `preview_email`. They approximate Apple Mail, Gmail App Android and classic Outlook on Windows. They are not renders.
+
+### Dark styles for Apple Mail, Outlook.com and Outlook mobile
+
+Put the meta tags in an `mj-raw` inside `mj-head`, and the dark rules in `mj-style`. MJML writes a section background inline on the outer `div` and on its child `table`. A section `css-class` lands on that `div`. On `mj-text`, the class lands on the `td`, and the colour sits on the inner `div` or on an inline-styled `h1`. Gmail, Outlook on Windows and Yahoo ignore these rules.
+
+```xml
+<mj-head>
+  <mj-raw>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="supported-color-schemes" content="light dark" />
+  </mj-raw>
+  <mj-style>
+    :root { color-scheme: light dark; supported-color-schemes: light dark; }
+    @media (prefers-color-scheme: dark) {
+      .dm-bg, .dm-bg > table { background: #111111 !important; background-color: #111111 !important; }
+      .dm-text div, .dm-text h1 { color: #f5f5f5 !important; }
+    }
+    [data-ogsb] .dm-bg, [data-ogsb] .dm-bg > table { background-color: #111111 !important; }
+    [data-ogsc] .dm-text div, [data-ogsc] .dm-text h1 { color: #f5f5f5 !important; }
+  </mj-style>
+</mj-head>
+<mj-section css-class="dm-bg" background-color="#ffffff" padding="24px 32px">
+  <mj-column>
+    <mj-text css-class="dm-text" color="#222222">Body copy</mj-text>
+  </mj-column>
+</mj-section>
+```
+
+Repeat `[data-ogsc]` or `[data-ogsb]` on every selector in a list. Outlook.com drops a rule with a bare selector in the list. We did not test the `[data-ogsc]` and `[data-ogsb]` rules.
+
+### Gmail `light only` tag
+
+When Gmail recolouring breaks a design without a dark version, try the `light only` tag below. Sources disagree on it (see `client-behavior.md`). It helps Google accounts only. Litmus Gmail previews can still show forced dark, so check it with a real send to a phone. The tag also stops Apple Mail dark styles. If the email has dark styles, keep the `:root` rule and leave out the `light dark` meta tags. The tag overrides the dark-mode choice of the reader, so say so in the report.
+
+```xml
+<mj-head>
+  <mj-raw>
+    <meta name="color-scheme" content="light only" />
+  </mj-raw>
+  <mj-style>
+    :root { color-scheme: light dark; }
+  </mj-style>
+</mj-head>
+```
+
+### Dark areas in Outlook on Windows
+
+Outlook 2021 and 365 on Windows turn a dark footer light grey and its light text dark grey. `[data-ogsc]` and `[data-ogsb]` do nothing there (failed in black-friday v2). Courier says that Microsoft names no supported way to stop it. Tuts+ documents two partial fixes. We did not test them, so add them as variants and check them on a real PC.
+
+- Keep the background dark with a VML fill. Give the `mj-section` a `background-url` with a solid tile in the area colour, and the same `background-color`. MJML writes the Outlook `v:rect` and `v:fill`. Outlook does not recolour VML fills or images, but it still recolours the text on them. Make the tile at least 60 by 60 px, because Gmail inverts smaller tiles.
+- Keep white text white with a class from a `gte mso 16` style block. `.ol-keep-white` is the gradient text trick. With `.ol-auto-white`, Outlook picks the text colour. It picks white with a body of `#555555` or lighter and a fill of `#333333` or darker. The class must be the only class on the element. Tuts+ says that the gradient trick is not reliable inside VML in Litmus.
+
+```xml
+<mj-head>
+  <mj-raw>
+    <!--[if gte mso 16]>
+    <style>
+      .ol-keep-white { mso-style-textfill-type:gradient; mso-style-textfill-fill-gradientfill-stoplist:"0 \#FFFFFF 0 100000\,100000 \#FFFFFF 0 100000"; color:#000000 !important; }
+      .ol-auto-white { mso-color-alt:auto; }
+    </style>
+    <![endif]-->
+  </mj-raw>
+</mj-head>
+<mj-section background-color="#1d1d1d" background-url="../images/footer-tile.png" background-repeat="repeat" padding="24px 32px">
+  <mj-column>
+    <mj-text>
+      <p class="ol-keep-white" style="margin:0;font-family:Arial, Helvetica, sans-serif;font-size:12px;line-height:18px;color:#ffffff;">Footer text</p>
+    </mj-text>
+  </mj-column>
+</mj-section>
+```
+
+### Near-black photo areas in Outlook 2021
+
+White specks on near-black JPEG areas in Outlook 2021 have no documented cause. Do not repeat the fixes that failed in `lessons.md`: JPEG quality, colour sampling, a lossless PNG and the exact display width. `image_info` flags photos with many near-black pixels. To test the lead, add a `lift_blacks` copy as a variant next to the original.
 
 ## Freely positioned designs
 
@@ -75,12 +163,12 @@ Frames without auto-layout (header and hero text placed freely) are rebuilt as s
 - Footer must have an unsubscribe link, `<a href="{% unsubscribe_link %}">Unsubscribe</a>`, and a physical postal address: `{{ organization.full_address }}` or the sender's real address. Litmus fails the compliance check without an address.
 - Optional: `<a href="{% web_view_link %}">View in browser</a>`, `{{ organization.name }}`.
 - Never put Klaviyo tags inside HTML comments. MJML keeps comments, and Klaviyo processes tags inside them.
-- Klaviyo merges `<style>` blocks and turns font `<link>` tags into `@import`; that's fine.
+- Klaviyo merges `<style>` blocks and turns font `<link>` tags into `@import`. This is fine.
 
-## Things email can't do
+## Things email cannot do
 
 Absolute positioning, overlapping elements, rotated elements and blend modes. Simplify them (capture the parent and crop a flattened image, or drop decorative overlays) and tell the user what changed.
 
 ## Test values
 
-Fake links or a sample address used only for testing must be recorded with `set_test_values`, so the pre-check flags them until the real values are in. Don't hide them in comments.
+Record fake links and sample addresses for tests with `set_test_values`. The pre-check then flags them until the real values are in. Do not hide them in comments.

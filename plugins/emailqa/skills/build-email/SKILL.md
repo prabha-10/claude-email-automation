@@ -9,6 +9,8 @@ One email at a time, for one client. Every EmailQA tool takes `client` (folder n
 
 Read [mjml-rules.md](mjml-rules.md) before you write any MJML. If the workspace has `library/lessons.md` (team lessons), read it too. `library/mjml-starter.mjml` is a good starting point.
 
+Before you style colours, logos or dark areas, read [library/client-behavior.md](../../library/client-behavior.md). It says what each email client does in dark mode, and which fixes have a source.
+
 Never change the Figma file. Never invent copy: take it from the design. Never use shell commands for files: use `import_file`, `image_info`, `convert_image` and `crop_image`.
 
 Work from start to finish without questions. If step 1 cannot find the frame, ask. Say any guess in one line in the report.
@@ -55,7 +57,7 @@ Test values: if the design has no real links, footer address or similar values, 
 
 - `compile_email`. Fix any MJML errors.
 - `precheck_email`. At this stage "Every image URL is absolute https" fails, because the images are still local. That is expected until test-email hosts them. Fix every other failure (contrast and preview text length included), and read the warnings.
-- `preview_email`. Take a screenshot of the `compare` page with Claude in Chrome (desktop 600px, mobile 375px, simulated dark mode). Compare it with `design/figma.png`. Fix layout problems, mobile stacking and dark-mode issues before any Litmus test. Here a fix costs nothing, but in Litmus it costs a round.
+- `preview_email`. Take a screenshot of the `compare` page with the browser. It shows 600px, 375px and three client dark frames. Compare it with `design/figma.png`. Fix layout problems, mobile stacking and dark-mode issues before any Litmus test. The `precheck_email` warnings that start with "Dark mode," name the text that the Gmail or Outlook frame makes hard to read. Here a fix costs nothing, but in Litmus it costs a round.
 - `update_email_record` with a note such as "Built from Figma node 1:4909, fonts guessed: …".
 
 ## 7. Report and iterate

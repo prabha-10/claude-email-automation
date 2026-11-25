@@ -15,6 +15,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { VERSION, envValue, now, readJson, registerTools, writeJson } from "./lib/common.mjs";
 import { isAllowedRecipient, litmusBases, requireEmail, requireWorkspace, saveRecord, within } from "./lib/workspace.mjs";
+import { planGuard } from "./lib/plans.mjs";
 
 const API = "https://a.klaviyo.com/api";
 const REVISION = envValue("KLAVIYO_REVISION") || "2026-10-15";
@@ -22,8 +23,10 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_HTML_BYTES = 1024 * 1024;
 const IMAGE_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif" };
 const MAX_RETRIES = 4;
-// Litmus rounds per email. Round 1 shows every problem; round 2 confirms the fixes. Each send to the
-// Litmus address uses one set of previews (one per selected email client), so more rounds cost credits.
+// Litmus rounds per email. Round 1 shows every problem; round 2 tests the fixes (several variants of a
+// fix side by side when the cause is not known). Each send to the Litmus address uses one set of previews
+// (one per selected email client), so more rounds cost credits. After resolve_variants, one confirm round
+// is allowed on top, because a client may only get a version that was tested exactly as it is.
 const LITMUS_ROUNDS = 2;
 
 /** Litmus sends of this email so far. Older records only have history notes, so read those too. */
@@ -363,7 +366,7 @@ tool(
 
 tool(
   "send_test_email",
-  "Send a TEST email of this email's [TEST] template to Litmus (Klaviyo preview send, max 5 recipients, about 100 a day per account). Defaults to the client's Litmus folder address, else your Litmus address. Only your Litmus address and its +folder variants are allowed. Can't send campaigns or email customers. Each email gets 2 Litmus rounds (round 1 finds every problem, round 2 confirms the fixes); it refuses a third unless extra_round is true, and refuses a re-send of an unchanged template.",
+  "Send a TEST email of this email's [TEST] template to Litmus (Klaviyo preview send, max 5 recipients, about 100 a day per account). Defaults to the client's Litmus folder address, else your Litmus address. Only your Litmus address and its +folder variants are allowed. Can't send campaigns or email customers. Each email gets 2 Litmus rounds (round 1 finds every problem, round 2 tests the fixes) plus one confirm round after resolve_variants; it refuses more unless extra_round is true, and refuses a re-send of an unchanged template. From the second round on it also refuses when the previous round is not reviewed and recorded, or when that round left open problems and there is no fix plan (plan_fixes).",
   {
     client: clientArg,
     email: emailArg,
@@ -385,10 +388,19 @@ tool(
         `Nothing changed since the last Litmus send (v${last.version}), so another send would spend Litmus previews on the same email. Edit email.mjml, compile_email and upsert_template first.`
       );
     }
-    if (sends.length >= LITMUS_ROUNDS && !extra_round) {
+    // The confirm round: the first send after resolve_variants, on top of the two normal rounds.
+    const lastTest = (e.record.tests || [])[(e.record.tests || []).length - 1];
+    const vr = e.record.variantResolution;
+    const confirmRound = sends.length >= LITMUS_ROUNDS && !!vr && !vr.confirmUsed && !!lastTest && new Date(vr.at) > new Date(lastTest.at);
+    if (sends.length >= LITMUS_ROUNDS && !extra_round && !confirmRound) {
       throw new Error(
-        `This email already used its ${LITMUS_ROUNDS} Litmus rounds (${sends.map((s) => `v${s.version}`).join(", ")}). Check further fixes with preview_email instead. Only if the user explicitly asks for another Litmus round, call again with extra_round: true.`
+        `This email already used its ${LITMUS_ROUNDS} Litmus rounds (${sends.map((s) => `v${s.version}`).join(", ")}). Check further fixes with preview_email instead. After resolve_variants one confirm round is allowed. Only if the user explicitly asks for another Litmus round, call again with extra_round: true.`
       );
+    }
+    if (!confirmRound) {
+      const mjml = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
+      const refused = planGuard({ record: e.record, sends: sends.length, mjml });
+      if (refused) throw new Error(refused);
     }
     const bases = litmusBases();
     if (!bases.length) throw new Error("No Litmus test address set in the plugin settings, so test sends are off.");
@@ -408,6 +420,7 @@ tool(
     (e.record.history ||= []).push({ at: now(), note: `v${e.record.version} test-sent to ${to.join(", ")}` });
     sends.push({ at: now(), version: e.record.version, sha: e.record.klaviyo?.publishedSha || null, to });
     e.record.litmusSends = sends;
+    if (confirmRound) vr.confirmUsed = true;
     await saveRecord(e.recordFile, e.record);
     return {
       job_id: res.data.id,
@@ -417,6 +430,7 @@ tool(
       sent_to: to,
       litmus_round: sends.length,
       litmus_rounds_left: Math.max(0, LITMUS_ROUNDS - sends.length),
+      ...(confirmRound && { confirm_round: true }),
     };
   }
 );

@@ -41,12 +41,16 @@ import {
 } from "./lib/workspace.mjs";
 import { runSetupChecks } from "./lib/setup-checks.mjs";
 import { installFigmaRuntime, prepareBridgeManifest } from "./lib/figma-runtime.mjs";
-import { cropImage, imageInfo, pngToJpg } from "./lib/images.mjs";
+import { cropImage, imageInfo, liftBlacks, pngToJpg } from "./lib/images.mjs";
+import { DARK_MODES, simulateDark } from "./lib/dark-sim.mjs";
 // imageInfo here reads a file path; the handoff one fingerprints bytes (format, size, SHA-256).
 import { accountIdOf, imageInfo as fileFingerprint, imageUrlsIn, matchLinks, sha256, swapLinks } from "./lib/handoff.mjs";
 import { checkContrast } from "./lib/contrast.mjs";
 import { ensurePreviewServer, openInBrowser, previewUrls } from "./lib/preview.mjs";
 import { summarize } from "./lib/design.mjs";
+import { CLIENT_BEHAVIOR, KINDS, addLessons, loadLessons, matchClientBehavior, matchLessons } from "./lib/lessons.mjs";
+import { checkPlanItems, checkPlanResults, lessonEntries, openProblems, pendingPlan } from "./lib/plans.mjs";
+import { resolveVariants, summarizeVariants } from "./lib/variants.mjs";
 
 const server = new McpServer({ name: "email-build", version: VERSION });
 const tool = registerTools(server);
@@ -118,6 +122,8 @@ tool(
     const libSrc = path.join(pluginRoot(), "library");
     await mkdir(path.join(ws, "library"), { recursive: true });
     for (const f of await readdir(libSrc).catch(() => [])) {
+      // client-behavior.md is reference data the plugin keeps current; find_lessons reads the plugin's copy.
+      if (f === CLIENT_BEHAVIOR) continue;
       const dest = path.join(ws, "library", f);
       if (!existsSync(dest)) {
         await copyFile(path.join(libSrc, f), dest);
@@ -377,7 +383,7 @@ tool("list_emails", "List a client's emails with version, Klaviyo template and l
         version: r.version,
         klaviyo_template: r.klaviyo?.templateId || null,
         test_values_in_place: (r.testValues || []).length,
-        last_test: last ? { at: last.at, version: last.version, alerts: last.alerts, findings: last.findings?.length ?? null } : null,
+        last_test: last ? { at: last.at, version: last.version, alerts: last.alerts, findings: last.findings?.length ?? null, open_problems: openProblems(last).length } : null,
         client_handoff: r.handoff ? { version: r.handoff.version, final_html: r.handoff.finalHtml || null } : null,
       });
     } catch {
@@ -389,17 +395,32 @@ tool("list_emails", "List a client's emails with version, Klaviyo template and l
 
 tool(
   "update_email_record",
-  'Update an email\'s record (email.json): deep-merge `patch`, optionally append one test result to `tests`, and add a history note.',
+  'Update an email\'s record (email.json): deep-merge `patch`, optionally append one test result to `tests`, and add a history note. A test recorded after a fix plan (plan_fixes) must carry plan_results, one entry per fix; each result is also written to the workspace\'s library/lessons.md.',
   {
     client: clientArg,
     email: emailArg,
     patch: z.record(z.string(), z.any()).optional(),
-    add_test: z.record(z.string(), z.any()).optional().describe('e.g. {"litmus_email_id":"12345678","alerts":1,"findings":[...]}'),
+    add_test: z
+      .record(z.string(), z.any())
+      .optional()
+      .describe(
+        'e.g. {"litmus_email_id":"12345678","alerts":1,"findings":[...],"open":["Gmail App Dark: band text pale green"],"plan_results":[{"item":1,"result":"failed","evidence":"qa/v3/gmailapp-dark-band.jpg: text still pale green"},{"item":2,"result":"worked","evidence":"…","variants":[{"id":"A","result":"failed"},{"id":"B","result":"worked"}]}]}. `open` lists the problems in our email that are still open after this round (empty list when none).'
+      ),
     note: z.string().optional(),
   },
   async ({ client, email, patch, add_test, note }) => {
     const e = await requireEmail(client, email);
     const record = e.record;
+    let lessonsWritten = 0;
+    if (add_test) {
+      const pending = pendingPlan(record);
+      if (pending) {
+        const errors = checkPlanResults(pending, add_test.plan_results);
+        if (errors.length) throw new Error(`Record what happened to each fix in the plan first:\n- ${errors.join("\n- ")}`);
+        const where = `${client}/${e.email} v${record.version ?? "?"}, ${now().slice(0, 10)}`;
+        lessonsWritten = await addLessons(e.ws, lessonEntries(pending, add_test.plan_results, where));
+      }
+    }
     if (patch) deepMerge(record, patch);
     if (add_test) (record.tests ||= []).push({ at: now(), version: record.version, ...add_test });
     if (note) (record.history ||= []).push({ at: now(), note });
@@ -410,6 +431,135 @@ tool(
       version: record.version ?? null,
       changed: [...(patch ? Object.keys(patch) : []), ...(add_test ? ["tests"] : []), ...(note ? ["history"] : [])],
       tests: (record.tests || []).length,
+      ...(add_test && { open_problems: openProblems(record.tests[record.tests.length - 1]).length }),
+      ...(lessonsWritten && { lessons_written: lessonsWritten }),
+    };
+  }
+);
+
+const clientAppsArg = z.array(z.string().min(2)).min(1).describe('Client apps that show the problem, e.g. ["Gmail App Dark Android 15"]');
+
+tool(
+  "find_lessons",
+  "Search the workspace's library/lessons.md (team lessons and the fix log, including fixes that failed) and library/client-behavior.md (what each email client does in dark mode, documented fixes and their sources) for a problem. Use the client app and the symptom as the query, for example 'Outlook 2021 dark mode white text'. Read the matches before you plan a fix.",
+  { query: z.string().min(3), limit: z.number().int().min(1).max(20).default(8) },
+  async ({ query, limit }) => {
+    const { ws } = await requireWorkspace();
+    const matches = matchLessons(await loadLessons(ws), query, { limit });
+    const client_behavior = await matchClientBehavior(ws, query, { limit: Math.min(limit, 6) });
+    return {
+      query,
+      matches,
+      client_behavior,
+      ...(matches.length + client_behavior.length === 0 && { note: "Nothing recorded for this yet. Search the web for the cause, and record the result with plan_fixes and update_email_record." }),
+    };
+  }
+);
+
+tool(
+  "plan_fixes",
+  "Write the fix plan for the problems the last Litmus review found, before changing anything. For each problem give the cause, where the cause comes from, the fix and how the next round proves it. A second or later Litmus send is refused without a plan. If the cause is not known, test two or more fixes as variants side by side in one round (variant_group and variants). Returns lessons that match, and refuses a fix that already failed unless why_different says what is different.",
+  {
+    client: clientArg,
+    email: emailArg,
+    items: z
+      .array(
+        z.object({
+          problem: z.string().describe("The problem and the client app, as the review found it"),
+          clients: clientAppsArg,
+          cause: z.string().describe("Why the client shows this (a mechanism, not a repeat of the symptom)"),
+          source: z.string().describe("Where the cause comes from: a lessons.md line, a URL, a screenshot path, or what you measured. 'none' only with variants."),
+          fix: z.string().describe("The change you will make"),
+          proof: z.string().describe("What the next round must show for the fix to count, for example 'qa/v4/gmailapp-dark-band.jpg: band text dark green'"),
+          variant_group: z.string().optional().describe("Group name used in <!-- variant <group> <id> --> blocks in email.mjml"),
+          variants: z.array(z.string()).optional().describe('One line per variant: "A: control, unchanged", "B: band text as an image"'),
+          why_different: z.string().optional().describe("Required when the fix looks like one that already failed (see find_lessons)"),
+        })
+      )
+      .min(1)
+      .max(8),
+  },
+  async ({ client, email, items }) => {
+    const e = await requireEmail(client, email);
+    const lessons = await loadLessons(e.ws);
+    const errors = checkPlanItems(items, lessons);
+    if (errors.length) throw new Error(`The plan is not ready:\n- ${errors.join("\n- ")}`);
+    (e.record.plans ||= []).push({ at: now(), version: e.record.version ?? null, items });
+    (e.record.history ||= []).push({ at: now(), note: `Fix plan: ${items.length} item(s)` });
+    await saveRecord(e.recordFile, e.record);
+    const related = [];
+    for (const it of items) {
+      const q = `${it.problem} ${it.clients.join(" ")}`;
+      related.push({ problem: it.problem, lessons: matchLessons(lessons, q, { limit: 4 }), client_behavior: await matchClientBehavior(e.ws, q, { limit: 3 }) });
+    }
+    return {
+      saved: true,
+      items: items.length,
+      related_lessons: related,
+      next: items.some((i) => i.variant_group)
+        ? "Add the variant blocks to email.mjml (a visible label row in each), compile_email, upsert_template, send. After the review, record plan_results, then resolve_variants."
+        : "Make the fixes, compile_email, upsert_template, send. After the review, record plan_results with update_email_record.",
+    };
+  }
+);
+
+tool(
+  "record_lesson",
+  "Add one line to the fix log in the workspace's library/lessons.md. update_email_record writes these for every fix in a plan, so call this only for something learned outside a plan: a cause found, a fix that worked in a real client, or an idea worth trying later (kind idea).",
+  {
+    kind: z.enum(KINDS),
+    clients: z.string().min(2).describe('Client apps, e.g. "Gmail App Dark" or "Outlook 2021, Outlook 365 Dark"'),
+    problem: z.string().min(8),
+    fix: z.string().min(4),
+    cause: z.string().optional(),
+    evidence: z.string().optional().describe("A URL, a screenshot path or what was measured"),
+    client: z.string().optional(),
+    email: z.string().optional(),
+  },
+  async ({ kind, clients, problem, fix, cause, evidence, client, email }) => {
+    const { ws } = await requireWorkspace();
+    let where = now().slice(0, 10);
+    if (client && email) {
+      const e = await requireEmail(client, email);
+      where = `${client}/${e.email} v${e.record.version ?? "?"}, ${where}`;
+    }
+    const added = await addLessons(ws, [{ kind, clients, problem, fix, cause, evidence, where }]);
+    return { saved: added === 1, ...(added === 0 && { note: "The same line is already in lessons.md." }) };
+  }
+);
+
+tool(
+  "resolve_variants",
+  "Keep one test variant of a group and delete the others (and the label rows) from email.mjml. Call it after the Litmus review shows which variant works. Then compile_email and test the result: the client gets only a version that was tested exactly as it is, and one confirm round is allowed after this call.",
+  {
+    client: clientArg,
+    email: emailArg,
+    group: z.string().describe("The variant group name"),
+    keep: z.string().describe("The variant id to keep, for example B"),
+  },
+  async ({ client, email, group, keep }) => {
+    const e = await requireEmail(client, email);
+    const file = path.join(e.emailDir, "email.mjml");
+    const text = await readFile(file, "utf8").catch(() => {
+      throw new Error("No email.mjml in this email's folder.");
+    });
+    const res = resolveVariants(text, group, keep);
+    await writeFile(file, res.text);
+    const left = summarizeVariants(res.text);
+    const vr = (e.record.variantResolution ||= { groups: [] });
+    vr.at = now();
+    vr.confirmUsed = false;
+    if (!vr.groups.includes(group)) vr.groups.push(group);
+    (e.record.history ||= []).push({ at: now(), note: `Variants "${group}" resolved: kept ${keep}, removed ${res.removed.join(", ")}` });
+    await saveRecord(e.recordFile, e.record);
+    return {
+      group,
+      kept: keep,
+      removed: res.removed,
+      groups_left: left.groups.map((g) => g.group),
+      next: left.groups.length
+        ? `Other variant groups are still in the email: ${left.groups.map((g) => g.group).join(", ")}. Resolve them too.`
+        : "Run compile_email, precheck_email, upsert_template and send the confirm round.",
     };
   }
 );
@@ -487,7 +637,7 @@ tool(
 
 tool(
   "image_info",
-  "Size, format and dimensions of one image, or of every image in the email's images/ folder. Flags transparent PNGs with dark pixels (they vanish in dark mode), oversized files and unsupported formats.",
+  "Size, format and dimensions of one image, or of every image in the email's images/ folder. Flags transparent PNGs with dark pixels (they vanish in dark mode), photos with many near-black pixels (Outlook 2021 specks lead), oversized files and unsupported formats.",
   { client: clientArg, email: emailArg, file: z.string().optional().describe('e.g. "images/logo.png"; leave out for all of images/') },
   async ({ client, email, file }) => {
     const e = await requireEmail(client, email);
@@ -518,6 +668,29 @@ tool(
     if (dest === src) throw new Error("Only .png files can be converted.");
     const r = await pngToJpg(src, dest, { quality, background });
     return { from: file, to: path.relative(e.emailDir, dest).split(path.sep).join("/"), ...r };
+  }
+);
+
+tool(
+  "lift_blacks",
+  "Save a copy of a photo with its darkest pixels raised to about luma `floor` (0-255). Mid-tones and highlights stay the same. This tests the lead for white specks on near-black photo areas in Outlook 2021 (not confirmed). Use the copy as a variant next to the original, not as a silent swap.",
+  {
+    client: clientArg,
+    email: emailArg,
+    file: z.string().describe('e.g. "images/hero-bottom.jpg"'),
+    dest: z.string().optional().describe('Default: the same name with "-lifted" added, e.g. "images/hero-bottom-lifted.jpg"'),
+    floor: z.number().int().min(8).max(40).default(18),
+    quality: z.number().int().min(60).max(95).default(90),
+  },
+  async ({ client, email, file, dest, floor, quality }) => {
+    const e = await requireEmail(client, email);
+    const src = await within(e.emailDir, file);
+    if (!/\.(jpe?g|png)$/i.test(src)) throw new Error("Only JPG and PNG files can be lifted.");
+    const target = await within(e.emailDir, dest || file.replace(/(\.[a-z]+)$/i, "-lifted$1"), { mustExist: false });
+    if (target === src) throw new Error("dest must differ from file. Keep the original for the control variant.");
+    await mkdir(path.dirname(target), { recursive: true });
+    const r = await liftBlacks(src, target, { floor, quality });
+    return { from: file, saved: path.relative(e.emailDir, target).split(path.sep).join("/"), floor, ...r };
   }
 );
 
@@ -558,14 +731,25 @@ tool(
       throw new Error(`No email.mjml yet in ${e.emailDir}.`);
     });
     const out = path.join(e.emailDir, "build", "email.html");
-    const result = await mjml2html(await readFile(src, "utf8"), { validationLevel: "soft", filePath: src });
+    const source = await readFile(src, "utf8");
+    const result = await mjml2html(source, { validationLevel: "soft", filePath: src });
     await mkdir(path.dirname(out), { recursive: true });
     await writeFile(out, result.html);
     const bytes = Buffer.byteLength(result.html);
     const errors = (result.errors || []).slice(0, 25).map((x) => x.formattedMessage || x.message);
     e.record.lastBuild = { at: now(), bytes, mjml_errors: errors.length };
     await saveRecord(e.recordFile, e.record);
-    return { output: path.relative(e.dir, out).split(path.sep).join("/"), kb: +(bytes / 1024).toFixed(1), mjml_errors: errors };
+    const variants = summarizeVariants(source);
+    return {
+      output: path.relative(e.dir, out).split(path.sep).join("/"),
+      kb: +(bytes / 1024).toFixed(1),
+      mjml_errors: errors,
+      ...((variants.count > 0 || variants.problems.length > 0) && {
+        test_variants: variants.groups.map((g) => `${g.group}: ${g.ids.join(", ")}`),
+        ...(variants.problems.length && { variant_problems: variants.problems }),
+        variants_note: "This build holds test variants. Fine for a Litmus round; resolve_variants removes them before the client gets the email.",
+      }),
+    };
   }
 );
 
@@ -581,7 +765,7 @@ async function urlStatus(url) {
 
 tool(
   "precheck_email",
-  "Pre-check build/email.html before Klaviyo or Litmus: size, alt text, hosted https images, links and images responding, placeholder links, WCAG AA text contrast, dark-mode risk in transparent PNGs, and test values still in place. `failed` blocks a test; `warnings` don't.",
+  "Pre-check build/email.html before Klaviyo or Litmus: size, alt text, hosted https images, links and images responding, placeholder links, WCAG AA text contrast, text that loses contrast in Gmail App Android or Outlook Windows dark mode (approximation), dark-mode risk in transparent PNGs, near-black photo areas, and test values still in place. `failed` blocks a test; `warnings` don't.",
   { client: clientArg, email: emailArg, check_urls: z.boolean().default(true) },
   async ({ client, email, check_urls }) => {
     const e = await requireEmail(client, email);
@@ -594,8 +778,19 @@ tool(
     const add = (pass, check, detail) => checks.push({ pass, check, ...(detail ? { detail } : {}) });
     const testValues = e.record.testValues || [];
 
+    const variantSrc = await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => "");
+    const variants = summarizeVariants(variantSrc);
     const bytes = Buffer.byteLength(html);
-    add(bytes < 90 * 1024, "HTML under 90 KB (Gmail clips at ~102 KB)", `${(bytes / 1024).toFixed(1)} KB`);
+    if (variants.count > 0 && bytes >= 90 * 1024) {
+      // Variants repeat sections, so the size only counts once they are resolved.
+      warnings.push(`HTML is ${(bytes / 1024).toFixed(1)} KB with ${variants.count} test variants in it. Check the size again after resolve_variants (Gmail clips at ~102 KB).`);
+    } else {
+      add(bytes < 90 * 1024, "HTML under 90 KB (Gmail clips at ~102 KB)", `${(bytes / 1024).toFixed(1)} KB`);
+    }
+    if (variants.count > 0) {
+      warnings.push(`Test variants in the email: ${variants.groups.map((g) => `${g.group} (${g.ids.join(", ")})`).join("; ")}. Fine for a Litmus round. resolve_variants must remove them before handoff.`);
+    }
+    for (const p of variants.problems) add(false, "Test variant blocks are complete", p);
 
     const imgs = [...html.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0]);
     const noAlt = imgs.filter((t) => !/\balt\s*=/i.test(t));
@@ -655,7 +850,32 @@ tool(
         : `${contrast.text_nodes_checked} text runs checked`
     );
 
-    for (const f of (await readdir(path.join(e.emailDir, "images")).catch(() => [])).filter((n) => /\.png$/i.test(n))) {
+    // Dark-mode and near-black risks in the images the email uses: local links, or the hosted links host_images recorded.
+    const hosted = e.record.klaviyo?.images || {};
+    // Text that loses contrast only in a client's forced dark mode (Gmail App Android, classic Outlook on Windows).
+    // The colours come from the dark-sim approximation, so these are warnings: Litmus is the proof.
+    const lightTexts = new Set(contrast.issues.flatMap((i) => i.examples));
+    for (const mode of DARK_MODES.filter((m) => m.id !== "apple")) {
+      let dark;
+      try {
+        dark = checkContrast(simulateDark(html, mode.id));
+      } catch {
+        continue;
+      }
+      const fresh = dark.issues.filter((i) => !i.examples.every((x) => lightTexts.has(x)));
+      if (fresh.length) {
+        warnings.push(
+          `Dark mode, ${mode.label} (approximation): ${fresh
+            .slice(0, 4)
+            .map((i) => `${i.color} on ${i.background} = ${i.ratio}:1, e.g. "${i.examples[0]}"`)
+            .join("; ")}. Look at this frame in preview_email and check the client in Litmus.`
+        );
+      }
+    }
+
+    for (const f of (await readdir(path.join(e.emailDir, "images")).catch(() => [])).filter((n) => /\.(png|jpe?g)$/i.test(n))) {
+      const url = hosted[`images/${f}`];
+      if (!html.includes(`images/${f}`) && !(url && html.includes(url))) continue;
       const info = await imageInfo(path.join(e.emailDir, "images", f)).catch(() => null);
       for (const w of info?.warnings || []) if (/dark/i.test(w)) warnings.push(`images/${f}: ${w}`);
     }
@@ -688,7 +908,7 @@ tool(
 
 tool(
   "preview_email",
-  "Serve the compiled email on this computer (127.0.0.1) and return preview URLs: a compare page (desktop 600px, mobile 375px, simulated dark mode) plus the raw email. Screenshot them with Claude in Chrome before a Litmus send, or open them for the user.",
+  "Serve the compiled email on this computer (127.0.0.1) and return preview URLs: a compare page (desktop 600px, mobile 375px, then one dark-mode frame each for Apple Mail, Gmail App Android and classic Outlook on Windows) plus the raw email and each dark view. The dark frames are approximations of each client's colour change, not renders. Screenshot them with the browser before a Litmus send, or open them for the user.",
   { client: clientArg, email: emailArg, open: z.boolean().default(false).describe("Also open the compare page in the default browser") },
   async ({ client, email, open }) => {
     const e = await requireEmail(client, email);
@@ -804,6 +1024,10 @@ tool(
       throw new Error(`"${e.email}" has no build/email.html. Compile it first (build-email skill).`);
     }
 
+    const leftover = summarizeVariants(await readFile(path.join(e.emailDir, "email.mjml"), "utf8").catch(() => ""));
+    if (leftover.count > 0) {
+      throw new Error(`email.mjml still has test variants (${leftover.groups.map((g) => g.group).join(", ")}). Keep one variant per group with resolve_variants, compile, and test the result before the handoff.`);
+    }
     const tests = (record.tests || []).filter((t) => t.version === record.version);
     const lastTest = tests[tests.length - 1];
     if (!record.version || !lastTest) {

@@ -73,7 +73,7 @@ Rules
    - The folder I open Claude in is the workspace. /emailqa:start makes it one without asking, and client folders go inside it.
    - /emailqa:start  → first run: checks the install, installs the Figma server, guides the Figma bridge, checks the Klaviyo key, Litmus address and Litmus login in Chrome. Then it picks the client from my message, the open Figma file, or the only client, and asks only if it cannot tell.
    - Select the email frame in Figma (or paste its link), then /emailqa:build-email
-   - /emailqa:test-email  → [TEST] template in my Klaviyo test account, test send to Litmus, review and fixes. At most 2 Litmus rounds per email. A Sonnet agent does the Litmus review.
+   - /emailqa:test-email  → [TEST] template in my Klaviyo test account, test send to Litmus, review and fixes. At most 2 Litmus rounds per email, plus one confirm round after test variants are resolved. Before it changes the email, it finds the cause of each problem (lessons file, then the web), writes a fix plan, and tests several fixes side by side when the cause is not known. Every fix that was tried, also a failed one, goes into the workspace's library/lessons.md. A Sonnet agent does the Litmus review.
    - /emailqa:handoff-email  → once approved: images and final template into the client's Klaviyo, after one question that covers the upload and the import
    Plain language works too: "start EmailQA", "build the selected frame", "test it in Litmus", "hand it off to the client".
 ```

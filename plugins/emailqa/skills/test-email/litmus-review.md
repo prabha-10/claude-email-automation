@@ -81,3 +81,7 @@ Look at the rest of the grid as thumbnails, for big failures only (missing image
 ## Save the evidence
 
 Screenshot tools return a saved path, usually in a temporary folder. Copy each screenshot into `qa/v<version>/` with `import_file`. At the end, close your tab.
+
+## Fix plan items and variants
+
+From round 2 on, check the client apps named in the fix plan first. Judge each plan item against its `proof` line. If the email has test variants, take one screenshot per variant with its label row in the picture, and judge each against the `proof` line (ok, bad or unclear). Report what you see. Do not name causes.

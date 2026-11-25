@@ -32,7 +32,7 @@ Every EmailQA tool takes `client` and `email`, for example `spring-sale` or `bla
 
 ## 1. Make sure that it is ready
 
-Read the email's record, `clients/<client>/emails/<email>/email.json`. `list_emails` shows its version and latest test. The latest entry in `tests` must be for the current `version`, and nothing must be left under "Our email". If not, finish the test-email skill first.
+Read the email's record, `clients/<client>/emails/<email>/email.json`. `list_emails` shows its version and latest test. The latest entry in `tests` must be for the current `version`, and `last_test.open_problems` must be 0. If not, finish the test-email skill first. `pack_images_for_client` also refuses while test variants are still in `email.mjml`: the test-email skill removes them with `resolve_variants` and tests the result.
 
 If `list_emails` shows test values left in the email, list them and stop. They must be replaced first. `precheck_email` catches example.com links but not wrong copy, so the question in step 4 asks the handler to make sure that the copy is final.
 

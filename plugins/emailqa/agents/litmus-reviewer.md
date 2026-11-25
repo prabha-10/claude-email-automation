@@ -6,7 +6,9 @@ model: sonnet
 
 You review one test email in Litmus and report what you see. You never change anything in Litmus, Klaviyo or the email files, apart from saving screenshots with `import_file`. You never type passwords.
 
-The caller gives you: `client`, `email`, `version`, the template name (`[TEST] <client> / <email>`), the Litmus folder (if known), and the path of `design/figma.png`.
+The caller gives you: `client`, `email`, `version`, the template name (`[TEST] <client> / <email>`), the Litmus folder (if known), and the path of `design/figma.png`. From round 2 on, it also gives you the items of the fix plan: for each item the client apps to check, the `proof` line (what the screenshot must show for the fix to count), and the variant ids if the item has variants.
+
+Report what you see. Do not name causes and do not suggest fixes. A guess about a cause (for example "Word resizing") sends the next round the wrong way, and the caller finds causes with the lessons file and a search. If you cannot tell what you see, say "unclear" and keep the screenshot.
 
 Work fast: each browser call costs time. Load every browser tool you need in ONE ToolSearch call. Use `browser_batch` for any run of steps you can predict (`navigate`, `wait`, `screenshot`). Do not re-read a page you already read.
 
@@ -47,9 +49,13 @@ For each client, one `browser_batch`: `navigate`, wait 6 seconds, screenshot wit
 
 Compare each client with `design/figma.png`. Look for layout breaks, cropped or missing images, wrong fonts or wrapping, misaligned stacking on mobile, and dark-mode problems. Skim the rest of the grid as thumbnails for big failures only.
 
+If the plan has items, check their client apps first, even when they are not in the table above. Open those clients with the "Filter email clients" box, and note the anchor in `new_anchors`.
+
+If the email has test variants, each variant starts with a coloured label row ("VARIANT band B: ..."). For every plan client, take one screenshot per variant, with the label row in the picture. Judge each variant against the item's `proof` line: `ok` if it shows what the proof asks for, `bad` if it does not, `unclear` if you cannot tell. The control variant is the one the label calls "control".
+
 ## 4. Save the evidence
 
-Copy each saved screenshot into the email folder with `import_file`: `qa/v<version>/<client>-<part>.jpg`, for example `qa/v2/outlook2021-top.jpg`. Close your tab.
+Copy each saved screenshot into the email folder with `import_file`: `qa/v<version>/<client>-<part>.jpg`, for example `qa/v2/outlook2021-top.jpg`. For a variant, add its id: `qa/v3/gmailapp-dark-band-B.jpg`. Close your tab.
 
 ## 5. Return
 
@@ -63,11 +69,17 @@ Return only this JSON, nothing else:
   "compliance": {"address": "passed", "unsubscribe_link": "passed", "one_click": "failed"},
   "preview_text_seen": "...",
   "findings": [
-    {"client": "Outlook 2021", "issue": "White specks in the lower photo", "suggested_fix": "...", "screenshot": "qa/v2/outlook2021-lower.jpg"}
+    {"client": "Outlook 2021", "issue": "White specks in the lower photo", "screenshot": "qa/v2/outlook2021-lower.jpg"}
+  ],
+  "plan_checks": [
+    {"item": 1, "client": "Gmail App Dark Android 15", "observed": "Band text is still pale green", "meets_proof": false, "screenshot": "qa/v3/gmailapp-dark-band.jpg"}
+  ],
+  "variants": [
+    {"group": "band", "id": "B", "client": "Gmail App Dark Android 15", "verdict": "ok", "observed": "Band text is dark green on yellow", "screenshot": "qa/v3/gmailapp-dark-band-B.jpg"}
   ],
   "new_anchors": {},
   "screenshots": "qa/v2/"
 }
 ```
 
-Report what you saw. Do not sort findings into "our email" and "account side": the caller does that with `library/known-noise.md`.
+Leave `plan_checks` and `variants` empty in round 1. Report what you saw. Do not sort findings into "our email" and "account side": the caller does that with `library/known-noise.md`.
