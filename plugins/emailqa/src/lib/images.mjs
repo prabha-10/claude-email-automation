@@ -197,6 +197,21 @@ function downscale(img, width) {
   return { width, height, data: out };
 }
 
+// A solid-colour PNG, for example the tile behind an Outlook VML fill.
+export async function solidPng(dest, { color, width = 64, height = 64 }) {
+  const [r, g, b] = hexToRgb(color);
+  const png = new PNG({ width, height });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data[i] = r;
+    png.data[i + 1] = g;
+    png.data[i + 2] = b;
+    png.data[i + 3] = 255;
+  }
+  const bytes = PNG.sync.write(png);
+  await writeFile(dest, bytes);
+  return { width, height, color, bytes: bytes.length };
+}
+
 // Re-save a JPG at `quality`, scaled down to `maxWidth` if it is wider.
 export async function recompressJpg(src, dest, { quality = 82, maxWidth } = {}) {
   const buf = await readFile(src);

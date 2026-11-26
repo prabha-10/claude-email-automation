@@ -21,9 +21,11 @@ Every tool takes `client` and `email`, for example `spring-sale` or `black-frida
 - Klaviyo allows about 100 test sends a day per account (15 a minute). Each Litmus send uses one set of previews, one per selected email client.
 - The same `[TEST] <client> / <email>` template is updated every round.
 
-## 1. Pre-check and local preview
+## 1. Litmus sign-in, pre-check and local preview
 
-`compile_email`, then `precheck_email`. Fix every failure except "Every image URL is absolute https" while images are still local (step 2 fixes that). Then `preview_email` and screenshot the compare page with the browser. It shows 600px, 375px and one dark frame each for Apple Mail, Gmail App Android and classic Outlook on Windows. Fix anything visible before you spend a Litmus round.
+Check the Litmus sign-in once, first. Open `https://litmus.com/home` in a new Claude in Chrome tab. If a sign-in page shows, tell the user now, in one message, to sign in to Litmus in that Chrome profile. Never press Sign in yourself, even on a filled-in form. Do steps 1 to 5 while you wait: the sends reach Litmus without the sign-in. Start the reviewers in step 6 only after the user says that they signed in and the home page shows. A reviewer that finds the sign-in page stops, so starting it earlier only costs time.
+
+`compile_email`, then `precheck_email`. Fix every failure except "Every image URL is absolute https" while images are still local (step 2 fixes that). Then `preview_email` and screenshot the compare page with the browser. There is one exception. If build-email built or changed this email in this session and checked its compare page, and nothing changed since, skip the screenshot. Hosting images changes no layout. It shows 600px, 375px and one dark frame each for Apple Mail, Gmail App Android and classic Outlook on Windows. Fix anything visible before you spend a Litmus round.
 
 The dark frames copy the colour change of each client. They are approximations, not renders. They do not show Outlook-only code (VML, mso blocks) or the Word layout engine. `precheck_email` warns about text that loses contrast in the Gmail and Outlook frames. Treat those warnings as problems to fix or to test as variants in round 1. Litmus stays the proof.
 
@@ -48,6 +50,10 @@ Then `compile_email` and `precheck_email` again. Everything must pass now. Warni
 ## 6. Review in Litmus
 
 Start the `emailqa:litmus-reviewer` agent. It runs on Sonnet in a fresh context, which is faster than doing the review here. Give it: `client`, `email`, `version`, the template name, the client's Litmus folder (if known), the send time, and the path of `design/figma.png`. From round 2 on, also give it the items of the last fix plan: for each item, the client apps to check, the `proof` line, and the variant ids. It saves screenshots into `qa/v<version>/` and returns what it saw as JSON.
+
+- The agent opens five clients by default. The plan or the pre-check can need more clients. Name them in the brief. After a "Dark mode," warning in the pre-check, add the dark clients it names: Outlook 2021 dark, Outlook 365 dark, Gmail App Android dark or Gmail App iOS dark. The agent file lists their anchors.
+- Do not add browser rules, link forms or waits to the brief. The agent file holds the tested ones. Put a new browser fact in the agent file, so that every later review gets it.
+- The agent returns `timing` per stage and any `blocked_tools`. Use them in the round report.
 
 If the agent tool is not available, follow [litmus-review.md](litmus-review.md) yourself.
 

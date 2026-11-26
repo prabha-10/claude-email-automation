@@ -1,6 +1,6 @@
 {
   "name": "emailqa",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "EmailQA: turn Figma email designs into tested emails, one client folder each. Figma → MJML → pre-checks and local preview → Klaviyo [TEST] template on your test account → Litmus review and fixes → handoff to the client's Klaviyo with the client's own image links. Start with /emailqa:start.",
   "author": { "name": "prabha-10" },
   "keywords": ["email", "qa", "mjml", "figma", "klaviyo", "litmus"],

@@ -119,7 +119,7 @@ for (const n of ["setup_status", "install_figma_server", "prepare_figma_bridge",
   check(names.includes(n), `tool ${n} listed`);
 }
 
-for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails", "remove_unused_images"]) check(names.includes(n), `tool ${n} listed`);
+for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails", "remove_unused_images", "make_solid_image"]) check(names.includes(n), `tool ${n} listed`);
 
 let r = await b.call("setup_status");
 check(!r.isError && r.data.checks?.length >= 6, "setup_status runs", r.text);
@@ -246,6 +246,25 @@ r = await b.call("remove_unused_images", { client: "acme-outdoors", email: "spri
 const emailImages = path.join(ws, "clients", "acme-outdoors", "emails", "spring-campaign", "spring-teaser", "images");
 check(!r.isError && r.data.removed.join() === "images/edge.png" && r.data.refused.length === 3 && !existsSync(path.join(emailImages, "edge.png")) && existsSync(path.join(emailImages, "logo.png")), "remove_unused_images deletes only unused files in images/", r.text);
 
+// Many files in one import_file call (a Litmus review saves 16 to 28 screenshots).
+writeJpg(path.join(dirs.src, "shot1.jpg"), 300, 200, () => [200, 200, 200, 255]);
+writeJpg(path.join(dirs.src, "shot2.jpg"), 300, 200, darkPhoto);
+r = await b.call("import_file", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", files: [
+  { source_path: path.join(dirs.src, "shot1.jpg"), dest: "qa/v1/outlook2021-top.jpg" },
+  { source_path: path.join(dirs.src, "shot2.jpg"), dest: "qa/v1/outlook2021-mid.jpg" },
+  { source_path: path.join(dirs.src, "missing.jpg"), dest: "qa/v1/missing.jpg" },
+] });
+check(!r.isError && r.data.saved === 2 && r.data.failed.length === 1 && r.data.files[1].width === 300 && !("warnings" in r.data.files[1]), "import_file saves many files in one call and skips the image analysis for qa/", r.text);
+r = await b.call("import_file", { client: "acme-outdoors", email: "spring-campaign/spring-teaser" });
+check(r.isError, "import_file needs a file");
+
+r = await b.call("make_solid_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", color: "#111115", dest: "images/footer-tile.png" });
+check(!r.isError && r.data.width === 64 && r.data.height === 64 && existsSync(path.join(emailImages, "footer-tile.png")), "make_solid_image makes a 64px tile", r.text);
+r = await b.call("image_info", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", file: "images/footer-tile.png" });
+check(!r.isError && r.data.format === "png" && r.data.width === 64, "the tile is a valid PNG", r.text);
+r = await b.call("make_solid_image", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", color: "#111115", dest: "design/tile.png" });
+check(r.isError, "make_solid_image writes only into images/");
+
 r = await b.call("set_test_values", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", values: [{ label: "Shop link", value: "https://example.com/shop" }, { label: "Footer address", value: "100 Sample Street" }] });
 check(!r.isError && r.data.test_values.length === 2, "set_test_values", r.text);
 r = await b.call("update_email_record", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", note: "smoke" });
@@ -311,6 +330,8 @@ if (!r.isError) {
   check(r.isError && /No emails in the group/.test(r.text), "check_emails refuses an empty group", r.text);
   const agent = readFileSync(path.join(root, "agents", "email-builder.md"), "utf8");
   check(/^name: email-builder$/m.test(agent) && /^model: inherit$/m.test(agent) && /figma_get_selection/.test(agent), "email-builder agent is defined and keeps off the shared selection");
+  const reviewer = readFileSync(path.join(root, "agents", "litmus-reviewer.md"), "utf8");
+  check(/checklist\/tests\/<test id>#<anchor>/.test(reviewer) && /at most 10 seconds/.test(reviewer) && /iphone16gmailappdark/.test(reviewer) && /ONE `import_file` call/.test(reviewer), "litmus-reviewer has the tested link form, the 10 s wait limit, the dark anchors and one save call");
   const listed = [...agent.matchAll(/mcp__plugin_emailqa_email-build__([a-z_]+)/g)].map((m) => m[1]);
   check(listed.length >= 10 && listed.every((n) => names.includes(n)) && listed.includes("import_file"), "email-builder loads only tools that exist, import_file included", listed.filter((n) => !names.includes(n)).join(", "));
 

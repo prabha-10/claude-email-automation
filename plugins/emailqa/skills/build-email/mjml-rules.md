@@ -76,6 +76,8 @@ Give each gap exactly one owner. Do not stack section padding and column padding
 ## Text that breaks badly
 
 - Hyphenated words (to-do, e-mail, check-in) can split across lines in fallback fonts (Arial in Gmail and the new Outlook). Wrap them in `<span class="nowrap">` with `.nowrap { white-space: nowrap; }`.
+- Wrap only the hyphenated word, not the whole phrase. In "FREE FOUR-PACK", wrap "FOUR-PACK", so that the line can still break after "FREE". If the word alone is wider than the 375px column, make the heading's mobile font size smaller.
+- A last word alone on a headline line (an orphan): wrap the last two words in the same `nowrap` span. This worked in Gmail (Chrome) and iPhone 17 (tested by us, 2026-11-25). Gmail's fallback font is wider than most web fonts, so a line that fits in the design can wrap there.
 - iOS turns addresses, dates, times and phone numbers into blue underlined links. Add the `a[x-apple-data-detectors]` rule from the starter so they keep the design's colour, and give footer links an explicit colour.
 
 ## Contrast
@@ -144,10 +146,20 @@ When Gmail recolouring breaks a design without a dark version, try the `light on
 
 ### Dark areas in Outlook on Windows
 
-Outlook 2021 and 365 on Windows turn a dark footer light grey and its light text dark grey. `[data-ogsc]` and `[data-ogsb]` do nothing there (failed in black-friday v2). Courier says that Microsoft names no supported way to stop it. Tuts+ documents two partial fixes. We did not test them, so add them as variants and check them on a real PC.
+Outlook 2021 and 365 on Windows turn a dark footer light grey and its light text dark grey. Courier says that Microsoft names no supported way to stop it. Outlook does not recolour VML fills or images, but it still recolours the text on them. So a dark fill alone gives dark text on a dark fill, and the fill and a text fix work only together.
 
-- Keep the background dark with a VML fill. Give the `mj-section` a `background-url` with a solid tile in the area colour, and the same `background-color`. MJML writes the Outlook `v:rect` and `v:fill`. Outlook does not recolour VML fills or images, but it still recolours the text on them. Make the tile at least 60 by 60 px, because Gmail inverts smaller tiles.
-- Keep white text white with a class from a `gte mso 16` style block. `.ol-keep-white` is the gradient text trick. With `.ol-auto-white`, Outlook picks the text colour. It picks white with a body of `#555555` or lighter and a fill of `#333333` or darker. The class must be the only class on the element. Tuts+ says that the gradient trick is not reliable inside VML in Litmus.
+What we tested in Litmus (one footer, 2026-11-25, and black-friday v2):
+
+- `[data-ogsc]` and `[data-ogsb]` overrides: no change. Failed.
+- A dark tile through `mj-section background-url`, with the gradient text trick: Outlook 2021 and 365 dark kept the footer near-black with white text. Three problems made it fail. Gmail App iOS dark showed dark text on the near-black tile. MJML also writes the tile as a CSS background, and Gmail inverts the text but not the image. In Outlook 2021 light, the text moved about 24px left and the yellow headline turned white. The trick sets one colour for light and dark mode. A link in the footer was nearly invisible in Outlook dark.
+- The same tile with `mso-color-alt:auto` text: dark text in Outlook dark. Failed.
+- The plain footer with no fix: it turns light grey in Outlook dark and in Gmail App iOS dark, but the text stays readable. This is the default. Tell the user that the footer changes there.
+
+The next candidate is not tested by us. Test it only as a variant next to the plain footer, and check Outlook light as well as dark:
+
+- Write the VML tile for Outlook only, inside `<!--[if mso]>` in an `mj-raw`, and do not use `background-url`. Every other client then sees only the section's plain `background-color`, as with the plain footer.
+- Make the tile with `make_solid_image` (at least 64 by 64 px), in the footer colour.
+- Give each text colour its own gradient class with its design colour. For example, the yellow headline gets yellow, not white. Give links a class of their own.
 
 ```xml
 <mj-head>
@@ -155,19 +167,13 @@ Outlook 2021 and 365 on Windows turn a dark footer light grey and its light text
     <!--[if gte mso 16]>
     <style>
       .ol-keep-white { mso-style-textfill-type:gradient; mso-style-textfill-fill-gradientfill-stoplist:"0 \#FFFFFF 0 100000\,100000 \#FFFFFF 0 100000"; color:#000000 !important; }
-      .ol-auto-white { mso-color-alt:auto; }
     </style>
     <![endif]-->
   </mj-raw>
 </mj-head>
-<mj-section background-color="#1d1d1d" background-url="../images/footer-tile.png" background-repeat="repeat" padding="24px 32px">
-  <mj-column>
-    <mj-text>
-      <p class="ol-keep-white" style="margin:0;font-family:Arial, Helvetica, sans-serif;font-size:12px;line-height:18px;color:#ffffff;">Footer text</p>
-    </mj-text>
-  </mj-column>
-</mj-section>
 ```
+
+The class must be the only class on the element. Tuts+ says that the gradient trick is not reliable inside VML in Litmus.
 
 ### Near-black photo areas in Outlook 2021
 

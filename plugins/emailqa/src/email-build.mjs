@@ -41,7 +41,7 @@ import {
 } from "./lib/workspace.mjs";
 import { runSetupChecks } from "./lib/setup-checks.mjs";
 import { installFigmaRuntime, prepareBridgeManifest } from "./lib/figma-runtime.mjs";
-import { cropImage, imageInfo, liftBlacks, pngToJpg, recompressJpg } from "./lib/images.mjs";
+import { cropImage, imageInfo, liftBlacks, pngToJpg, recompressJpg, sniff, solidPng } from "./lib/images.mjs";
 import { DARK_MODES, darkColor, simulateDark } from "./lib/dark-sim.mjs";
 // imageInfo here reads a file path; the handoff one fingerprints bytes (format, size, SHA-256).
 import { accountIdOf, imageInfo as fileFingerprint, imageUrlsIn, matchLinks, sha256, swapLinks } from "./lib/handoff.mjs";
@@ -619,21 +619,65 @@ const COPYABLE = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".json", ".h
 
 tool(
   "import_file",
-  "Copy a file into an email's folder, e.g. a Figma or Litmus screenshot saved in a temp folder → design/figma.png, images/hero.png or qa/v2/outlook2021-top.jpg. Use this instead of shell cp.",
+  "Copy a file into an email's folder, e.g. a Figma or Litmus screenshot saved in a temp folder → design/figma.png, images/hero.png or qa/v2/outlook2021-top.jpg. Use this instead of shell cp. To save many files (all the Litmus screenshots of a review), pass them in `files` in ONE call: each call costs about 1.5 s.",
   {
     client: clientArg,
     email: emailArg,
-    source_path: z.string().describe("Absolute path of the saved file"),
-    dest: z.string().describe('Path inside the email folder, e.g. "images/hero.png"'),
+    source_path: z.string().optional().describe("Absolute path of the saved file"),
+    dest: z.string().optional().describe('Path inside the email folder, e.g. "images/hero.png"'),
+    files: z
+      .array(z.object({ source_path: z.string(), dest: z.string() }))
+      .min(1)
+      .max(60)
+      .optional()
+      .describe("Several files in one call, in place of source_path and dest"),
   },
-  async ({ client, email, source_path, dest }) => {
+  async ({ client, email, source_path, dest, files }) => {
     const e = await requireEmail(client, email);
-    const src = await checkSource(source_path, COPYABLE);
-    const target = await within(e.emailDir, dest, { mustExist: false });
+    if (!files && !(source_path && dest)) throw new Error("Pass source_path and dest, or files.");
+    const copyOne = async (from, to) => {
+      const src = await checkSource(from, COPYABLE);
+      const target = await within(e.emailDir, to, { mustExist: false });
+      await mkdir(path.dirname(target), { recursive: true });
+      await copyFile(src, target);
+      const saved = path.relative(e.dir, target).split(path.sep).join("/");
+      // Only email images get the full analysis (dark-mode and near-black checks); a Litmus screenshot needs none.
+      if (/^images\//.test(to.replace(/\\/g, "/").replace(/^\.\//, "")) && /\.(png|jpe?g|gif)$/i.test(target)) return { saved, ...(await imageInfo(target)) };
+      const buf = await readFile(target);
+      return { saved, bytes: buf.length, ...(/\.(png|jpe?g|gif)$/i.test(target) && sniff(buf)) };
+    };
+    if (!files) return copyOne(source_path, dest);
+    const results = [];
+    for (const f of files) {
+      try {
+        results.push(await copyOne(f.source_path, f.dest));
+      } catch (err) {
+        results.push({ dest: f.dest, error: err.message });
+      }
+    }
+    return { saved: results.filter((r) => !r.error).length, failed: results.filter((r) => r.error), files: results };
+  }
+);
+
+tool(
+  "make_solid_image",
+  "Make a solid-colour PNG in the email's images/ folder, for example the tile that an Outlook VML fill needs (mjml-rules.md, Dark areas in Outlook on Windows). Default 64x64 px. Use this instead of a script.",
+  {
+    client: clientArg,
+    email: emailArg,
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/).describe('6-digit hex, e.g. "#111115"'),
+    dest: z.string().describe('e.g. "images/footer-tile.png"'),
+    width: z.number().int().min(1).max(2000).default(64),
+    height: z.number().int().min(1).max(2000).default(64),
+  },
+  async ({ client, email, color, dest, width, height }) => {
+    const e = await requireEmail(client, email);
+    const rel = dest.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!/^images\/[^/]+\.png$/i.test(rel)) throw new Error('dest must be a .png directly in images/, e.g. "images/footer-tile.png".');
+    const target = await within(e.emailDir, rel, { mustExist: false });
     await mkdir(path.dirname(target), { recursive: true });
-    await copyFile(src, target);
-    const info = /\.(png|jpe?g|gif)$/i.test(target) ? await imageInfo(target) : { bytes: (await stat(target)).size };
-    return { saved: path.relative(e.dir, target).split(path.sep).join("/"), ...info };
+    const r = await solidPng(target, { color, width, height });
+    return { saved: rel, ...r, note: "Reference it as ../images/<file>. host_images uploads it with the other images." };
   }
 );
 
