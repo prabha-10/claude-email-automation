@@ -16,6 +16,7 @@ import path from "node:path";
 import { VERSION, envValue, now, readJson, registerTools, writeJson } from "./lib/common.mjs";
 import { isAllowedRecipient, litmusBases, requireEmail, requireWorkspace, saveRecord, within } from "./lib/workspace.mjs";
 import { planGuard } from "./lib/plans.mjs";
+import { changeSinceTest } from "./lib/missing-info.mjs";
 
 const API = "https://a.klaviyo.com/api";
 const REVISION = envValue("KLAVIYO_REVISION") || "2026-10-15";
@@ -130,7 +131,7 @@ const tool = registerTools(server);
 
 tool(
   "check_connection",
-  "Check the Klaviyo test-account key works (read-only) and which Litmus addresses test sends may go to. Never shows the key.",
+  "Check the Klaviyo test-account key works (read-only) and which Litmus addresses test sends can go to. Never shows the key.",
   {},
   async () => {
     const key = apiKey();
@@ -324,6 +325,19 @@ tool(
     if (k.templateId && k.publishedSha === sha) {
       return { action: "unchanged", template_id: k.templateId, name: k.templateName, version: e.record.version };
     }
+    // Real links in place of test links after a Litmus test: the tested version stays. A publish would make a
+    // new version with no test, and the handoff needs a tested version.
+    if (k.templateId && (e.record.tests || []).some((t) => t.version === e.record.version)) {
+      const change = await changeSinceTest(e.emailDir, e.record, html);
+      if (change.link_only && !change.same) {
+        return {
+          action: "not_published",
+          version: e.record.version,
+          changed_links: change.changed_links,
+          reason: `Only test links became real links since the Litmus test of v${e.record.version}. The tested version stays, and no new round is needed. pack_images_for_client accepts it.`,
+        };
+      }
+    }
     const summarize = templateSummary(prefix);
     let id = k.templateId || (await findTemplateByName(fullName));
     let res;
@@ -339,6 +353,11 @@ tool(
     }
     e.record.version = (e.record.version || 0) + 1;
     Object.assign(k, { templateId: id, templateName: fullName, publishedSha: sha, publishedAt: now() });
+    // The exact HTML of this version. After the test, the handoff compares the build with it, so real links can
+    // replace test links without a new round.
+    const qaDir = path.join(e.emailDir, "qa", `v${e.record.version}`);
+    await mkdir(qaDir, { recursive: true });
+    await writeFile(path.join(qaDir, "published.html"), html);
     (e.record.history ||= []).push({ at: now(), note: `v${e.record.version} published to Klaviyo test template ${id} (${action})` });
     await saveRecord(e.recordFile, e.record);
     return { action, version: e.record.version, qa_folder: `qa/v${e.record.version}/`, ...summarize(res.data) };
@@ -366,7 +385,7 @@ tool(
 
 tool(
   "send_test_email",
-  "Send a TEST email of this email's [TEST] template to Litmus (Klaviyo preview send, max 5 recipients, about 100 a day per account). Defaults to the client's Litmus folder address, else your Litmus address. Only your Litmus address and its +folder variants are allowed. Can't send campaigns or email customers. Each email gets 2 Litmus rounds (round 1 finds every problem, round 2 tests the fixes) plus one confirm round after resolve_variants; it refuses more unless extra_round is true, and refuses a re-send of an unchanged template. From the second round on it also refuses when the previous round is not reviewed and recorded, or when that round left open problems and there is no fix plan (plan_fixes).",
+  "Send a TEST email of this email's [TEST] template to Litmus (Klaviyo preview send, max 5 recipients, about 100 a day per account). Defaults to the client's Litmus folder address, else your Litmus address. Only your Litmus address and its +folder variants are allowed. It cannot send campaigns or email customers. Each email gets 2 Litmus rounds (round 1 finds every problem, round 2 tests the fixes) plus one confirm round after resolve_variants; it refuses more unless extra_round is true, and refuses a re-send of an unchanged template. From the second round on it also refuses when the previous round is not reviewed and recorded, or when that round left open problems and there is no fix plan (plan_fixes).",
   {
     client: clientArg,
     email: emailArg,
@@ -385,7 +404,7 @@ tool(
     const last = sends[sends.length - 1];
     if (last?.sha && last.sha === e.record.klaviyo?.publishedSha) {
       throw new Error(
-        `Nothing changed since the last Litmus send (v${last.version}), so another send would spend Litmus previews on the same email. Edit email.mjml, compile_email and upsert_template first.`
+        `Nothing changed since the last Litmus send (v${last.version}), so another send spends Litmus previews on the same email. Edit email.mjml, compile_email and upsert_template first.`
       );
     }
     // The confirm round: the first send after resolve_variants, on top of the two normal rounds.

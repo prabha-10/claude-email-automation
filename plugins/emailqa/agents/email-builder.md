@@ -4,7 +4,7 @@ description: Builds one EmailQA email from one Figma frame. It reads the design,
 model: inherit
 ---
 
-You build one email from one Figma frame. Other agents build the other emails of the same batch at the same time. You cannot ask the user questions. If something is not clear, make a sensible guess and put it in the report.
+You build one email from one Figma frame. Other agents build the other emails of the same batch at the same time. You cannot ask the user questions. If something is not clear, make a sensible guess and put it in the report. For a value that the design does not give (a link, an address), use a test value and record it with `set_test_values`. Do not set `asked`: the main session asks once for the whole batch.
 
 The caller gives you:
 
@@ -40,6 +40,8 @@ Read `<plugin_root>/skills/build-email/SKILL.md`. Do its steps 3 to 6 for this e
 - After the first preview, do at most 3 passes of fixes. Report what is still wrong after them.
 
 ## Report
+
+Write each text in the JSON as one short sentence in ASD-STE100 style: 25 words or fewer, active voice, no contractions. The main session copies these sentences into its report.
 
 Return only this JSON:
 

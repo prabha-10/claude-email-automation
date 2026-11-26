@@ -88,11 +88,11 @@ export async function installFigmaRuntime() {
 
 // Creates ~/.figma-console-mcp/plugin/manifest.json without starting a server.
 export async function prepareBridgeManifest() {
-  if (!existsSync(figmaEntry())) throw new Error("The Figma server isn't installed yet. Run install_figma_server first.");
+  if (!existsSync(figmaEntry())) throw new Error("The Figma server is not installed yet. Run install_figma_server first.");
   const r = await run(process.execPath, [figmaEntry(), "--print-path"], { cwd: runtimeDir(), timeoutMs: 30000 });
   const manifest = bridgeManifest();
   if (!existsSync(manifest)) {
-    throw new Error(`The Figma bridge plugin files weren't created (exit ${r.code}).\n${r.out.trim().slice(-800)}`);
+    throw new Error(`The setup did not make the Figma bridge plugin files (exit ${r.code}).\n${r.out.trim().slice(-800)}`);
   }
   return manifest;
 }

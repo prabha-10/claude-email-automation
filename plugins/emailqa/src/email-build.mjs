@@ -51,12 +51,28 @@ import { summarize } from "./lib/design.mjs";
 import { CLIENT_BEHAVIOR, KINDS, addLessons, loadLessons, matchClientBehavior, matchLessons } from "./lib/lessons.mjs";
 import { checkPlanItems, checkPlanResults, lessonEntries, openProblems, pendingPlan } from "./lib/plans.mjs";
 import { resolveVariants, summarizeVariants } from "./lib/variants.mjs";
+import { changeSinceTest, kindOf, missingInfo, realValueProblem, replaceValue } from "./lib/missing-info.mjs";
 
 const server = new McpServer({ name: "email-build", version: VERSION });
 const tool = registerTools(server);
 
 const clientArg = z.string().describe('Client folder name, e.g. "acme" (see list_clients)');
 const emailArg = z.string().describe('Email folder path inside the client\'s emails/, e.g. "spring-sale" or "black-friday/teaser"');
+const MAX_BATCH = 20; // emails in one check_emails or replace_test_values call
+
+/** The email paths of a batch call: the listed emails plus every email in the group folder. */
+async function emailList(c, client, emails, group) {
+  if (!emails?.length && !group) throw new Error("Pass emails (a list of email paths) or group (a group folder).");
+  let list = [...new Set(emails || [])];
+  if (group) {
+    const g = group.replace(/^\/+|\/+$/g, "");
+    const inGroup = (await findEmails(c.dir)).filter((rel) => rel.startsWith(`${g}/`));
+    if (!inGroup.length) throw new Error(`No emails in the group "${g}" for client "${client}". list_emails shows the email paths.`);
+    list = [...new Set([...list, ...inGroup])];
+  }
+  if (list.length > MAX_BATCH) throw new Error(`${list.length} emails. Use at most ${MAX_BATCH} in one call.`);
+  return list;
+}
 
 // ---------- setup ----------
 
@@ -91,7 +107,7 @@ tool(
         "Open Figma Desktop (the app, not the browser) and open the design file.",
         "Menu: Plugins → Development → Import plugin from manifest…",
         mac
-          ? `In the file dialog press ⌘⇧G, paste ${manifest} and press Enter, then Open. (The folder is hidden, so it won't show up by browsing.)`
+          ? `In the file dialog press ⌘⇧G, paste ${manifest} and press Enter, then Open. (The folder is hidden, so it does not show when you browse.)`
           : `In the file dialog paste ${manifest} into the File name box and press Enter.`,
         "Run it: right-click the canvas → Plugins → Development → Figma Desktop Bridge. Its panel turns green and shows READY.",
         "Importing is once per computer (and possibly once per Figma account). Running it is needed in each file, each time the file is opened.",
@@ -254,7 +270,7 @@ tool(
     if (!key) throw new Error(`Not a Figma file URL or key: ${file}`);
     if (!allowed.includes(key)) {
       throw new Error(
-        `Figma file ${key} isn't one of ${c.config.name}'s files (${allowed.join(", ") || "none listed"}). ` +
+        `Figma file ${key} is not one of ${c.config.name}'s files (${allowed.join(", ") || "none listed"}). ` +
           "Make sure the right file is open, or if it really belongs to this client, add it with update_client (ask the user first)."
       );
     }
@@ -270,7 +286,7 @@ tool(
     const { ws } = await requireWorkspace();
     const old = await realpath(path.resolve(oldPath));
     const pipeline = await readJson(path.join(old, "pipeline.json")).catch(() => null);
-    if (!pipeline) throw new Error(`${old} has no pipeline.json, so it isn't an old Email Template Tester project.`);
+    if (!pipeline) throw new Error(`${old} has no pipeline.json, so it is not an old Email Template Tester project.`);
     const name = client_name || pipeline.brand || path.basename(old);
     const slug = checkClientSlug(slugify(name));
     const dir = path.join(ws, "clients", slug);
@@ -383,6 +399,7 @@ tool("list_emails", "List a client's emails with version, Klaviyo template and l
         version: r.version,
         klaviyo_template: r.klaviyo?.templateId || null,
         test_values_in_place: (r.testValues || []).length,
+        missing_info: (({ links, text, asked_at }) => ({ links: links.length, text: text.length, asked_at }))(missingInfo(r)),
         last_test: last ? { at: last.at, version: last.version, alerts: last.alerts, findings: last.findings?.length ?? null, open_problems: openProblems(last).length } : null,
         client_handoff: r.handoff ? { version: r.handoff.version, final_html: r.handoff.finalHtml || null } : null,
       });
@@ -566,7 +583,7 @@ tool(
 
 tool(
   "set_test_values",
-  "Record the fake values used only for testing (sample links, a sample postal address, etc.). The pre-check warns while any of them are still in the email, so they get replaced before a real send.",
+  "Record the fake values used only for testing (sample links, a sample postal address, etc.). They are the email's missing information. The pre-check warns while any of them are still in the email, so they get replaced before a real send. Set asked: true after the user saw the list of missing information, so that the skills do not ask again. replace_test_values puts the real values in.",
   {
     client: clientArg,
     email: emailArg,
@@ -576,9 +593,11 @@ tool(
       .describe('e.g. [{"label":"Footer address","value":"100 Sample Street"},{"label":"Social links","value":"https://example.com/social"}]'),
     remove: z.array(z.string()).optional().describe("Labels or values to remove, for example an old fake link you replaced. Runs before values are added."),
     clear: z.boolean().default(false).describe("Remove all recorded test values (after the real values are in)"),
+    asked: z.boolean().optional().describe("true: the user saw the list of missing information (in a build report or a question). Records the time."),
   },
-  async ({ client, email, values, remove, clear }) => {
+  async ({ client, email, values, remove, clear, asked }) => {
     const e = await requireEmail(client, email);
+    if (asked) e.record.missingInfo = { ...(e.record.missingInfo || {}), askedAt: now() };
     if (clear) e.record.testValues = [];
     const before = (e.record.testValues ||= []).length;
     if (remove?.length) e.record.testValues = e.record.testValues.filter((x) => !remove.includes(x.label) && !remove.includes(x.value));
@@ -589,7 +608,90 @@ tool(
     const notes = [clear && "Test values cleared", removed && `Test values removed: ${removed}`, values?.length && `Test values recorded: ${values.map((v) => v.label).join(", ")}`].filter(Boolean);
     (e.record.history ||= []).push({ at: now(), note: notes.join(". ") || "Test values unchanged" });
     await saveRecord(e.recordFile, e.record);
-    return { test_values: e.record.testValues, ...(remove?.length && { removed }) };
+    return { test_values: e.record.testValues, missing_info: missingInfo(e.record), ...(remove?.length && { removed }) };
+  }
+);
+
+tool(
+  "replace_test_values",
+  "Put the real values that the user gave in place of recorded test values, in email.mjml of one or more emails. Each answer matches a test value by its label or its fake value. Every copy is replaced, and the entry moves from the test values to the answered values. A real link that replaces a test link needs no new Litmus round: pack_images_for_client proves that only link addresses changed. Do not run upsert_template for that change. A real text value (an address, a code) changes what the reader sees, so after a Litmus test it needs one new round. Then run check_emails, or compile_email and precheck_email.",
+  {
+    client: clientArg,
+    emails: z.array(z.string()).min(1).max(MAX_BATCH).optional().describe('Email paths, e.g. ["black-friday/teaser"]'),
+    group: z.string().optional().describe("Group folder: every email inside it"),
+    answers: z
+      .array(
+        z.object({
+          label: z.string().optional().describe('The test value label, e.g. "Shop link"'),
+          test_value: z.string().optional().describe("Or the fake value itself"),
+          real: z.string().describe("The real value that the user gave"),
+        })
+      )
+      .min(1)
+      .max(50),
+  },
+  async ({ client, emails, group, answers }) => {
+    const c = await requireClient(client);
+    const list = await emailList(c, client, emails, group);
+    const bad = answers.filter((a) => !a.label && !a.test_value);
+    if (bad.length) throw new Error("Each answer needs a label or a test_value.");
+    const rows = [];
+    const matched = new Set();
+    for (const email of list) {
+      const e = await requireEmail(client, email);
+      const file = path.join(e.emailDir, "email.mjml");
+      let mjml = await readFile(file, "utf8").catch(() => {
+        throw new Error(`"${e.email}" has no email.mjml.`);
+      });
+      const open = e.record.testValues || [];
+      const replaced = [];
+      const skipped = [];
+      for (const a of answers) {
+        const t = open.find((x) => (a.label && x.label.toLowerCase() === a.label.trim().toLowerCase()) || (a.test_value && x.value === a.test_value.trim()));
+        if (!t) continue; // this answer is for another email
+        matched.add(a);
+        if (replaced.some((r) => r.test_value === t.value)) continue;
+        const kind = kindOf(t.value);
+        const real = a.real.trim();
+        const problem = realValueProblem(kind, real);
+        if (problem) {
+          skipped.push({ label: t.label, reason: problem });
+          continue;
+        }
+        const out = replaceValue(mjml, t.value, real, kind);
+        if (!out.copies) {
+          skipped.push({ label: t.label, reason: `The test value ${t.value} is not in email.mjml. Remove it with set_test_values if it is gone.` });
+          continue;
+        }
+        mjml = out.text;
+        replaced.push({ label: t.label, kind, test_value: t.value, real, copies: out.copies });
+      }
+      if (replaced.length) {
+        await writeFile(file, mjml);
+        const done = new Set(replaced.map((r) => r.test_value));
+        e.record.testValues = open.filter((x) => !done.has(x.value));
+        (e.record.answeredValues ||= []).push(...replaced.map(({ label, kind, test_value, real }) => ({ label, kind, test_value, real, at: now() })));
+        (e.record.history ||= []).push({ at: now(), note: `Real values in place of test values: ${replaced.map((r) => r.label).join(", ")}` });
+        await saveRecord(e.recordFile, e.record);
+      }
+      const tested = (e.record.tests || []).some((x) => x.version === e.record.version);
+      rows.push({
+        email: e.email,
+        replaced,
+        ...(skipped.length && { skipped }),
+        still_missing: missingInfo(e.record),
+        new_round_needed: tested && replaced.some((r) => r.kind === "text"),
+      });
+    }
+    const unmatched = answers.filter((a) => !matched.has(a));
+    return {
+      client,
+      emails: rows,
+      ...(unmatched.length && { not_matched: unmatched.map((a) => a.label || a.test_value), note_not_matched: "No email has a test value with this label or value. list_emails and precheck_email show the labels." }),
+      next: rows.some((r) => r.new_round_needed)
+        ? "Run check_emails. A text value changed after the Litmus test, so the email needs one new round. Collect every other open answer first, and ask the user before you send (send_test_email with extra_round: true)."
+        : "Run check_emails, or compile_email and precheck_email. A link-only change needs no new Litmus round and no upsert_template: pack_images_for_client accepts the tested version with the real links.",
+    };
   }
 );
 
@@ -882,7 +984,7 @@ function urlChecker(concurrency = 8) {
 
 tool(
   "precheck_email",
-  "Pre-check build/email.html before Klaviyo or Litmus: size, alt text, hosted https images, links and images responding, placeholder links, WCAG AA text contrast, text that loses contrast in Gmail App Android or Outlook Windows dark mode (approximation), dark-mode risk in transparent PNGs, near-black photo areas, and test values still in place. `failed` blocks a test; `warnings` don't.",
+  "Pre-check build/email.html before Klaviyo or Litmus: size, alt text, hosted https images, links and images responding, placeholder links, WCAG AA text contrast, text that loses contrast in Gmail App Android or Outlook Windows dark mode (approximation), dark-mode risk in transparent PNGs, near-black photo areas, and test values still in place. `failed` blocks a test. `warnings` do not.",
   { client: clientArg, email: emailArg, check_urls: z.boolean().default(true) },
   async ({ client, email, check_urls }) => precheckOne(await requireEmail(client, email), { check_urls })
 );
@@ -941,7 +1043,7 @@ async function precheckOne(e, { check_urls = true, checkUrl = urlChecker() } = {
   const placeholder = /\bexample\.(com|org|net)\b/i.test(html);
   const placeholderIsTestValue = testValues.some((t) => /\bexample\.(com|org|net)\b/i.test(t.value));
   if (placeholder && placeholderIsTestValue) warnings.push("example.com links are recorded test values; replace them before a real send.");
-  else add(!placeholder, "No example.com placeholder links", placeholder ? "Record them with set_test_values if they're deliberate test links" : undefined);
+  else add(!placeholder, "No example.com placeholder links", placeholder ? "If they are test links, record them with set_test_values" : undefined);
 
   const hrefs = [...new Set([...html.matchAll(/<a\b[^>]*\bhref\s*=\s*"([^"]+)"/gi)].map((m) => m[1]))];
   const webLinks = hrefs.filter((h) => /^https?:\/\//i.test(h));
@@ -1020,13 +1122,21 @@ async function precheckOne(e, { check_urls = true, checkUrl = urlChecker() } = {
   }
 
   const present = testValues.filter((t) => html.includes(t.value));
-  if (present.length) warnings.push(`Test values still in the email: ${present.map((t) => t.label).join(", ")}. Replace them before a real send.`);
+  const presentLinks = present.filter((t) => kindOf(t.value) === "link");
+  const presentText = present.filter((t) => kindOf(t.value) === "text");
+  if (presentLinks.length) {
+    warnings.push(`Test links still in the email: ${presentLinks.map((t) => t.label).join(", ")}. Replace them before a real send. A real link needs no new Litmus round.`);
+  }
+  if (presentText.length) {
+    warnings.push(`Test text still in the email: ${presentText.map((t) => t.label).join(", ")}. Replace it before the first Litmus round. After a test, a text change needs one new round.`);
+  }
 
   const tags = [...new Set([...html.matchAll(/\{\{[^}]*\}\}|\{%[^%]*%\}/g)].map((m) => m[0]))];
   if (!tags.some((t) => /unsubscribe/.test(t))) warnings.push("No Klaviyo unsubscribe tag found ({% unsubscribe_link %}).");
   const passed = checks.every((c) => c.pass);
   e.record.lastPrecheck = {
     at: now(),
+    checked_urls: !!check_urls,
     passed,
     failed: checks.filter((c) => !c.pass).map((c) => `${c.check}: ${c.detail || ""}`),
     warnings,
@@ -1040,8 +1150,26 @@ async function precheckOne(e, { check_urls = true, checkUrl = urlChecker() } = {
     checks,
     klaviyo_tags: tags,
     klaviyo_tag_links: tagLinks,
+    ...(testValues.length && { missing_info: missingInfo(e.record) }),
     note: "Klaviyo tags are filled in only when Klaviyo renders or sends the email.",
   };
+}
+
+/** One question per missing value across a batch: the same label in several emails is asked once. */
+function mergeMissing(records) {
+  const byKey = new Map();
+  for (const { email, record } of records) {
+    const m = missingInfo(record);
+    for (const x of [...m.links, ...m.text]) {
+      const key = `${x.kind}:${x.label.toLowerCase()}`;
+      const item = byKey.get(key) || { label: x.label, kind: x.kind, test_values: [], emails: [], asked_at: m.asked_at };
+      if (!item.test_values.includes(x.test_value)) item.test_values.push(x.test_value);
+      item.emails.push(email);
+      if (!m.asked_at) item.asked_at = null;
+      byKey.set(key, item);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "text" ? -1 : 1));
 }
 
 tool(
@@ -1063,7 +1191,6 @@ tool(
   }
 );
 
-const MAX_BATCH = 20;
 const short = (s, n = 400) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 tool(
@@ -1077,16 +1204,8 @@ tool(
     open: z.boolean().default(false).describe("Also open the overview page in the default browser"),
   },
   async ({ client, emails, group, check_urls, open }) => {
-    if (!emails?.length && !group) throw new Error("Pass emails (a list of email paths) or group (a group folder).");
     const c = await requireClient(client);
-    let list = [...new Set(emails || [])];
-    if (group) {
-      const g = group.replace(/^\/+|\/+$/g, "");
-      const inGroup = (await findEmails(c.dir)).filter((rel) => rel.startsWith(`${g}/`));
-      if (!inGroup.length) throw new Error(`No emails in the group "${g}" for client "${client}". list_emails shows the email paths.`);
-      list = [...new Set([...list, ...inGroup])];
-    }
-    if (list.length > MAX_BATCH) throw new Error(`${list.length} emails. Check at most ${MAX_BATCH} in one call.`);
+    const list = await emailList(c, client, emails, group);
 
     // One URL checker for the whole batch: links that several emails share are checked once.
     const checkUrl = urlChecker();
@@ -1107,6 +1226,7 @@ tool(
               failed: pre.failed.map((x) => short(`${x.check}${x.detail ? `: ${x.detail}` : ""}`)),
               warnings: pre.warnings,
               ...(built.test_variants && { test_variants: built.test_variants }),
+              ...(pre.missing_info && { missing_info: pre.missing_info }),
             },
           };
         } catch (err) {
@@ -1130,12 +1250,17 @@ tool(
     const overview = shown.length ? overviewUrl(port, realRoot, shown, `${c.config.name}: ${shown.length} emails`) : null;
     if (open && overview) openInBrowser(overview);
     const rows = results.map((x) => x.row);
+    const missing = mergeMissing(results.filter((x) => x.e).map((x) => ({ email: x.e.email, record: x.e.record })));
     return {
       client,
       checked: rows.length,
       passed: rows.filter((r) => r.passed).length,
       overview,
       emails: rows,
+      ...(missing.length && {
+        missing_info: missing,
+        missing_info_note: "Ask the user once for all of these, in one numbered list. Text values first: after a Litmus test, a text change needs one new round. Links can come any time before the handoff. Then call set_test_values with asked: true for each email, and replace_test_values with the answers.",
+      }),
       note: "passed means no MJML errors and no failed pre-check. Images stay local until host_images runs, so \"Every image URL is absolute https\" fails until then. The overview shows 600px and 375px; each email's compare link adds the dark frames.",
     };
   }
@@ -1186,7 +1311,7 @@ tool(
     public_key: z
       .string()
       .regex(/^[A-Za-z0-9]{4,12}$/)
-      .describe("The public API key / site ID, e.g. AbC123. It's the <id> in https://cdn.klaviyomail.com/company/<id>/..."),
+      .describe("The public API key / site ID, e.g. AbC123. It is the <id> in https://cdn.klaviyomail.com/company/<id>/..."),
   },
   async ({ client, account_name, public_key }) => {
     const c = await requireClient(client);
@@ -1249,8 +1374,23 @@ tool(
     if (!record.version || !lastTest) {
       throw new Error(`Version ${record.version} of "${e.email}" has no recorded Litmus test. Test it first (test-email skill), then pack.`);
     }
+    // A rebuild after the test is fine when the HTML is the same, or when only test links became real links.
+    let linksChanged = [];
     if (record.lastBuild?.at && new Date(record.lastBuild.at) > new Date(lastTest.at)) {
-      throw new Error(`"${e.email}" was rebuilt after its last Litmus test (${lastTest.at}). Re-test it, so the client gets exactly what was tested.`);
+      const change = await changeSinceTest(e.emailDir, record, html);
+      if (!change.link_only) {
+        throw new Error(`"${e.email}" was rebuilt after its last Litmus test (${lastTest.at}). ${change.reason} Re-test it, so the client gets exactly what was tested.`);
+      }
+      if (!change.same) {
+        const pc = record.lastPrecheck;
+        const linkFails = (pc?.failed || []).filter((f) => /^(Link responds|No example\.com|No empty)/.test(f));
+        if (!pc || new Date(pc.at) < new Date(record.lastBuild.at) || !pc.checked_urls || linkFails.length) {
+          throw new Error(
+            `Only link addresses changed after the Litmus test, so no new round is needed. First run precheck_email with check_urls on: the real links must respond.${linkFails.length ? ` Failed now: ${linkFails.join("; ")}` : ""}`
+          );
+        }
+        linksChanged = change.changed_links;
+      }
     }
     if (html.includes("../images/")) {
       throw new Error("The built HTML still uses local images (../images/...). Host them with the test-email skill first.");
@@ -1262,10 +1402,14 @@ tool(
     const inHtml = imageUrlsIn(html).filter((u) => !usedUrls.has(u));
     const strays = inHtml.filter((u) => testAccounts.has(accountIdOf(u)));
     if (strays.length) {
-      throw new Error(`These test-account images are in the HTML but not in email.json (klaviyo.images), so I can't tell which file they are: ${strays.join(", ")}`);
+      throw new Error(`These test-account images are in the HTML but not in email.json (klaviyo.images), so the tool cannot tell which file they are: ${strays.join(", ")}`);
     }
     if (!used.length) {
-      return { images: 0, note: "This email has no images hosted in the test account, so build/email.html can be imported into the client's Klaviyo as it is." };
+      return {
+        images: 0,
+        note: "This email has no images hosted in the test account, so build/email.html can be imported into the client's Klaviyo as it is.",
+        ...(linksChanged.length && { links_changed_after_test: linksChanged }),
+      };
     }
 
     const ck = e.config.clientKlaviyo || null;
@@ -1299,7 +1443,7 @@ tool(
         testCopy = `unreachable (${err.message})`;
       }
       if (testCopy === "different") {
-        throw new Error(`images/${file} (${imgShape(info)}) isn't the image that was tested at ${testUrl}. Re-host it and re-test before packing.`);
+        throw new Error(`images/${file} (${imgShape(info)}) is not the image that was tested at ${testUrl}. Re-host it and re-test before packing.`);
       }
       const reuseUrl = remembered[info.sha256]?.url || null;
       if (!reuseUrl) await writeFile(path.join(outDir, packedAs), bytes);
@@ -1338,6 +1482,7 @@ tool(
       packedAt: now(),
       folder: relTo(e.dir, path.dirname(outDir)),
       testedHtmlSha256: sha256(html),
+      ...(linksChanged.length && { linksChangedAfterTest: linksChanged }),
       clientAccount: ck?.publicKey || null,
       images: packed,
       clientImages: null,
@@ -1364,6 +1509,10 @@ tool(
       })),
       ...(reused.length && { already_in_client_account: reused.map((p) => ({ file: p.packedAs, client_link: p.reuseUrl })) }),
       ...(inHtml.length && { hosted_elsewhere_left_as_is: inHtml }),
+      ...(linksChanged.length && {
+        links_changed_after_test: linksChanged,
+        links_note: "Only these link addresses changed after the Litmus test. The rest of the HTML is the tested HTML, so no new round was needed.",
+      }),
       next: toUpload.length
         ? "Upload the files in images_folder to the client's Klaviyo (with Use originals), collect their links, then call apply_client_image_links with them."
         : "Nothing to upload. Call apply_client_image_links with no links; the remembered client links are checked and used.",
@@ -1381,7 +1530,7 @@ tool(
     mapping: z
       .record(z.string(), z.string())
       .optional()
-      .describe("Only when automatic matching couldn't decide: {\"<packed file name>\": \"<link>\"}, as the handler says"),
+      .describe("Only when automatic matching did not decide: {\"<packed file name>\": \"<link>\"}, as the handler says"),
   },
   async ({ client, email, links, mapping }) => {
     const e = await requireEmail(client, email);
@@ -1406,7 +1555,7 @@ tool(
     const urls = [...new Set([...links, ...Object.values(explicit)].map((u) => u.trim()).filter(Boolean))];
     if (!urls.length) throw new Error("No links given. Pass the links of the images uploaded to the client's Klaviyo.");
     const notHttps = urls.filter((u) => !/^https:\/\/\S+$/i.test(u));
-    if (notHttps.length) throw new Error(`These aren't https links: ${notHttps.join(", ")}`);
+    if (notHttps.length) throw new Error(`These are not https links: ${notHttps.join(", ")}`);
     const testIds = new Set(h.images.map((i) => accountIdOf(i.testUrl)).filter(Boolean));
     const fromTest = urls.filter((u) => h.images.some((i) => i.testUrl === u) || testIds.has(accountIdOf(u)));
     if (fromTest.length) {
@@ -1417,7 +1566,7 @@ tool(
       const foreign = urls.filter((u) => accountIdOf(u) !== ck.publicKey);
       if (foreign.length) {
         throw new Error(
-          `These links aren't from ${ck.accountName}'s Klaviyo account (public key ${ck.publicKey}). Check the right account is open, then take the links from there: ${foreign.join(", ")}`
+          `These links are not from ${ck.accountName}'s Klaviyo account (public key ${ck.publicKey}). Make sure that the right account is open, then take the links from there: ${foreign.join(", ")}`
         );
       }
     }
@@ -1433,7 +1582,7 @@ tool(
     }
     const m = matchLinks(h.images, fetched, explicit);
     const clientAccounts = [...new Set(m.matches.map((x) => accountIdOf(x.clientUrl)).filter(Boolean))];
-    if (clientAccounts.length > 1) m.problems.push(`The links come from ${clientAccounts.length} different Klaviyo accounts (${clientAccounts.join(", ")}). They should all be from the client's one account.`);
+    if (clientAccounts.length > 1) m.problems.push(`The links come from ${clientAccounts.length} different Klaviyo accounts (${clientAccounts.join(", ")}). They must all come from the one account of the client.`);
 
     // A remembered link that no longer works or no longer matches is forgotten, so the next pack includes that image.
     const stale = Object.entries(remembered).filter(([packedAs, url]) => !m.matches.some((x) => x.packedAs === packedAs && x.clientUrl === url));
@@ -1455,7 +1604,7 @@ tool(
         ...(failedDownloads.length && { links_that_did_not_load: failedDownloads }),
         ...(m.problems.length && { problems: m.problems }),
         ...(stale.length && {
-          forgotten: `These images were remembered as already in the client's account, but their links failed: ${stale.map(([f]) => f).join(", ")}. Run pack_images_for_client again; they'll be packed for upload.`,
+          forgotten: `These images were remembered as already in the client's account, but their links failed: ${stale.map(([f]) => f).join(", ")}. Run pack_images_for_client again. It then packs them for upload.`,
         }),
         next: "Nothing was written. Get the missing or wrong links (name the files), then call again with all links, plus `mapping` for any matched by name.",
       };
@@ -1466,7 +1615,7 @@ tool(
       m.matches.map(({ testUrl, clientUrl }) => ({ testUrl, clientUrl }))
     );
     if (swap.leftovers.length) throw new Error(`Test-account links are still in the HTML after the swap: ${swap.leftovers.join(", ")}`);
-    if (!swap.onlyLinksChanged) throw new Error("The swap would change more than the image links, so nothing was written. Check the email by hand.");
+    if (!swap.onlyLinksChanged) throw new Error("The swap changes more than the image links, so the tool wrote nothing. Compare the email with the tested HTML by hand.");
 
     const finalName = `${path.basename(e.email)}-final.html`;
     const finalFile = await within(e.emailDir, path.join("handoff", `v${h.version}`, finalName), { mustExist: false });
@@ -1508,7 +1657,7 @@ tool(
       })),
       ...(m.unusedLinks.length && { links_that_matched_no_image: m.unusedLinks }),
       ...(recompressed.length && {
-        note: `${recompressed.length} image(s) were re-compressed by Klaviyo ("Use originals" wasn't chosen). The layout can't change (same pixel size), but sharpness might: re-upload them with Use originals, or take a quick Litmus look.`,
+        note: `${recompressed.length} image(s) were re-compressed by Klaviyo, because "Use originals" was not selected. The layout cannot change (same pixel size), but the sharpness can. Upload them again with Use originals, or look at them in Litmus.`,
       }),
     };
   }
@@ -1533,7 +1682,7 @@ tool(
       if (Array.isArray(data) && data[0]?.type === "text") data = JSON.parse(data[0].text);
       if (data?.result && typeof data.result === "string") data.result = JSON.parse(data.result);
     } catch {
-      throw new Error("That file isn't JSON from a Figma result.");
+      throw new Error("That file is not JSON from a Figma result.");
     }
     return summarize(data?.result?.emailqaOutline ? data.result : data, max_lines);
   }

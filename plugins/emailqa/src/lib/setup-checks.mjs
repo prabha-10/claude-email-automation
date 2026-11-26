@@ -140,7 +140,7 @@ function litmusCheck() {
     ...(bases.length === 0 && {
       fix: "Add your ...@litmusemail.com address in the EmailQA plugin settings (Customize → Plugins → EmailQA → settings, or /plugin configure in the terminal), then start a new session.",
     }),
-    ...(notLitmus.length > 0 && { fix: `${notLitmus.join(", ")} isn't a Litmus address. Keep only your ...@litmusemail.com address in the plugin settings.` }),
+    ...(notLitmus.length > 0 && { fix: `${notLitmus.join(", ")} is not a Litmus address. Keep only your ...@litmusemail.com address in the plugin settings.` }),
   };
 }
 
@@ -152,7 +152,7 @@ export async function runSetupChecks() {
     id: "workspace",
     ok: !!workspace,
     detail: workspace ? `Workspace: ${workspace}` : "No workspace yet",
-    ...(!workspace && { fix: "Call create_workspace with no path: it makes this session's folder the workspace. Don't ask the user first." }),
+    ...(!workspace && { fix: "Call create_workspace with no path: it makes this session's folder the workspace. Do not ask the user first." }),
   });
   return {
     emailqa_version: VERSION,

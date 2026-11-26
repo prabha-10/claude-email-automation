@@ -168,12 +168,15 @@ Talk to Claude in plain language, or type the slash command. The plugin's skills
 | "Build the selected Figma frame for Acme" | build-email: MJML, pre-checks, 600px / 375px / dark preview |
 | "Build the 3 selected frames" | build-email: one agent per email at the same time, then one pre-check and one overview page for all |
 | "Make the headline smaller" | build-email: edit, recompile, re-check |
+| "The shop link is https://…" | the real value goes into every email that has that test value |
 | "Test it in Litmus" / "re-test after the fixes" | test-email: host images, publish `[TEST]` template, send to Litmus, review |
 | "It's approved, hand it off to the client" / pasting the client's image links | handoff-email: images and final template into the client's Klaviyo |
 
 Each email goes through: build → local preview → Litmus → fix → re-test → sign off → hand off to the client's Klaviyo. Several emails can go through the build and the Litmus review at the same time. A person then builds and sends the campaign in the client's Klaviyo.
 
-**Test values.** When a design has no real links or address yet, fake ones are recorded per email. The pre-check keeps warning until they're replaced.
+**Missing information.** A design can lack real links or an address. Claude then records fake test values for each email. Until you replace them, the pre-check warns. Claude asks for all of them once, in one list. After the Litmus test, a real link can replace a test link with no new round, because the handoff proves that only link addresses changed. If a text value (an address, a code) comes after the test, it costs one round. So Claude asks for text values first.
+
+**Report style.** Every result and summary follows ASD-STE100 Simplified Technical English: the result first, then the steps for you, then the missing information, then the details.
 
 **Litmus folders.** Give a client its Litmus folder's test address (a `+code` variant of yours) and its tests land in that folder.
 
@@ -184,7 +187,7 @@ The email is tested with images in your test Klaviyo account. The client's final
 Say "it's approved, hand it off to the client". With the client's Klaviyo logged in to Chrome, Claude does the steps below in a tab of its own:
 
 1. **Check the account.** It reads the open account's public key and stops if it isn't the client's. The account is saved in `client.json`. When you add the client, `/emailqa:start` can record it.
-2. **Pack.** It copies the email's images into `emails/<email>/handoff/v<N>/images/`, and refuses if the email changed after its last Litmus test. Images already uploaded to this client for earlier emails (the logo, social icons) are reused, not uploaded again.
+2. **Pack.** It copies the email's images into `emails/<email>/handoff/v<N>/images/`. If the email changed after its last Litmus test, it refuses. The one exception is real links in place of test links. Images already uploaded to this client for earlier emails (the logo, social icons) are reused, not uploaded again.
 3. **Upload, after your OK.** Content → Media & brand → Images → Upload images, with **Use originals** so Klaviyo doesn't compress them. It then reads each new image's link from the list. Klaviyo gives every image its own file name (`https://cdn.klaviyomail.com/company/<public key>/images/<id>.png`), so links are matched by content, not by name.
 4. **Swap.** It downloads each link and matches it to an image, then writes `emails/<email>/handoff/v<N>/<name>-final.html`. It writes nothing unless every image matched, every link is from the client's account, no test-account link is left, and nothing but the image links changed.
 5. **Import, after your OK.** Content → Templates → Email: saved → Create → Import email template, uploading the final file.

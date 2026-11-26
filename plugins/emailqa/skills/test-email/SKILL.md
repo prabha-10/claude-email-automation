@@ -7,12 +7,51 @@ description: Publish emails from a client's folder to the agency's Klaviyo TEST 
 
 Every tool takes `client` and `email`, for example `spring-sale` or `black-friday/teaser`. If the user did not name the email, use the one built or changed last in this session. If there is no such email and the client has more than one, ask.
 
+## Report style
+
+Write every message to the user in ASD-STE100 Simplified Technical English. This includes results, summaries, questions and round reports. The user must understand each message on one read.
+
+Use this order, and leave out a part that is empty:
+
+1. Result: one sentence that says what is true now.
+2. Your action: numbered steps for the user. One instruction per step, in the imperative.
+3. Missing information: numbered questions, one value per question.
+4. Details: short sentences, or a table to compare emails or clients.
+
+Rules:
+
+- Write 20 words or fewer in an instruction, and 25 words or fewer in a description.
+- Use the active voice and simple tenses. Say who does the action.
+- Use only these modal verbs: "can", "must" and "will".
+- Use one word for one meaning, and keep it. For example, always write "make sure that", and not a synonym.
+- Do not use contractions, semicolons, em dashes or bold for emphasis.
+- Give each number with its unit, for example 44px, 10 s or 1.2 MB.
+- Quote a tool error as it is. Do not shorten it.
+
 ## How to work
 
 - Run the whole flow without stopping for questions. If the user must act (a login, the Figma bridge) or a tool refuses, stop. Otherwise, keep going.
 - A Litmus round is slow and costs credits, and a guess does not teach anything. Find the cause of a problem before you change the email. The plan step (step 8) makes you do this: `send_test_email` refuses a second round without a fix plan.
 - Each email gets 2 Litmus rounds. Round 1 finds every problem. Round 2 tests the fixes. After `resolve_variants`, one more round is allowed to make sure that the result works. `send_test_email` refuses more unless the user asks for another round.
 - Several emails: in steps 1 and 2, call `check_emails` once for all the emails, in place of `compile_email` and `precheck_email` for each email. Run the other steps up to step 5 for each email. Then start one `emailqa:litmus-reviewer` agent per email in the same message. The reviews then run at the same time.
+
+## Missing information
+
+Missing information is a value that the design does not give, for example a real link, a footer address or a promo code. The build puts a test value in its place and records it with `set_test_values`. `precheck_email`, `check_emails` and `list_emails` show these values as `missing_info`, in two kinds:
+
+| Kind | Example | Cost of an answer after the Litmus test |
+|---|---|---|
+| Link | `https://example.com/?shop` | None. `pack_images_for_client` proves that only link addresses changed. |
+| Text | `100 Sample Street` | One Litmus round, because the reader sees the change. Before round 1, it costs nothing. |
+
+Follow these rules, so that missing information never starts a loop of rounds:
+
+1. Ask once. If `asked_at` is empty, ask for all the values in one numbered list, text values first. Then call `set_test_values` with `asked: true` for each email.
+2. Do not wait for the answer. Keep going with the test values.
+3. When the user answers, call `replace_test_values` once for all the emails. Then call `check_emails`.
+4. For link answers, do not call `upsert_template` or `send_test_email`. If `upsert_template` returns `not_published`, the tested version stays.
+5. For text answers after a test, collect every open answer first. Then ask the user for one extra round (`extra_round: true`). Never send a round for one answer.
+6. Do not ask again for a value that the user saw. At the end, list the values that are still open, one time.
 
 ## Rules
 
@@ -23,7 +62,7 @@ Every tool takes `client` and `email`, for example `spring-sale` or `black-frida
 
 ## 1. Litmus sign-in, pre-check and local preview
 
-Check the Litmus sign-in once, first. Open `https://litmus.com/home` in a new Claude in Chrome tab. If a sign-in page shows, tell the user now, in one message, to sign in to Litmus in that Chrome profile. Never press Sign in yourself, even on a filled-in form. Do steps 1 to 5 while you wait: the sends reach Litmus without the sign-in. Start the reviewers in step 6 only after the user says that they signed in and the home page shows. A reviewer that finds the sign-in page stops, so starting it earlier only costs time.
+Check the Litmus sign-in once, first. Open `https://litmus.com/home` in a new Claude in Chrome tab. If a sign-in page shows, tell the user now, in one message, to sign in to Litmus in that Chrome profile. If the missing information has no `asked_at`, ask for it in the same message (see Missing information). Never press Sign in yourself, even on a filled-in form. Do steps 1 to 5 while you wait: the sends reach Litmus without the sign-in. Start the reviewers in step 6 only after the user says that they signed in and the home page shows. A reviewer that finds the sign-in page stops, so starting it earlier only costs time.
 
 `compile_email`, then `precheck_email`. Fix every failure except "Every image URL is absolute https" while images are still local (step 2 fixes that). Then `preview_email` and screenshot the compare page with the browser. There is one exception. If build-email built or changed this email in this session and checked its compare page, and nothing changed since, skip the screenshot. Hosting images changes no layout. It shows 600px, 375px and one dark frame each for Apple Mail, Gmail App Android and classic Outlook on Windows. Fix anything visible before you spend a Litmus round.
 
@@ -37,7 +76,7 @@ Then `compile_email` and `precheck_email` again. Everything must pass now. Warni
 
 ## 3. Publish
 
-`upsert_template`. It creates or updates the template, bumps the email's version and records it. If it says `unchanged`, nothing changed since the last publish: do not send again.
+`upsert_template`. It creates or updates the template, bumps the email's version and records it. If it says `unchanged`, nothing changed since the last publish: do not send again. If it says `not_published`, only test links became real links since the last test. The tested version stays, and no round is needed.
 
 ## 4. Check the Klaviyo tags
 
@@ -79,7 +118,7 @@ Show the user the report of the round as one short message, and keep going.
 
 ## 8. Diagnose, plan, fix
 
-If "Our email" has no open problem, the email is ready. Remind the user about recorded test values (`list_emails` shows how many remain): replace them and call `set_test_values` with `clear: true` before a real send. Then suggest the handoff-email skill.
+If "Our email" has no open problem, the email is ready. If `missing_info` is still open, list it once (see Missing information). Then suggest the handoff-email skill.
 
 If a problem is open, do not edit yet. For each open problem:
 

@@ -103,13 +103,13 @@ export async function imageInfo(file) {
   const buf = await readFile(file);
   const info = { file: path.basename(file), bytes: buf.length, kb: +(buf.length / 1024).toFixed(1), ...sniff(buf) };
   const warnings = [];
-  if (["webp", "svg"].includes(info.format)) warnings.push(`${info.format.toUpperCase()} isn't supported by many email clients; use PNG or JPG.`);
+  if (["webp", "svg"].includes(info.format)) warnings.push(`Many email clients do not show ${info.format.toUpperCase()}. Use PNG or JPG.`);
   if (info.format === "jpg") {
     try {
       Object.assign(info, lumaStats(decode(buf)));
       if (info.near_black_share >= NEAR_BLACK_WARN_SHARE) warnings.push(nearBlackWarning(info));
     } catch (e) {
-      warnings.push(`Couldn't decode the JPG: ${e.message}`);
+      warnings.push(`The JPG did not decode: ${e.message}`);
     }
   }
   if (info.format === "png") {
@@ -117,11 +117,11 @@ export async function imageInfo(file) {
       Object.assign(info, pngAnalysis(buf));
       if (info.has_transparency && info.dark_opaque_share_of_opaque > 0.15) {
         warnings.push(
-          "Transparent PNG with dark pixels: on a dark background (dark mode) the dark parts may disappear. Consider a light outline or a solid background."
+          "Transparent PNG with dark pixels: on a dark background (dark mode) the dark parts can disappear. Add a light outline or a solid background."
         );
       }
       if (!info.has_transparency && buf.length > 150 * 1024) {
-        warnings.push("Large PNG without transparency: a JPG would be much smaller (convert_image).");
+        warnings.push("Large PNG without transparency: a JPG is much smaller (convert_image).");
       }
       if (!info.has_transparency) {
         // An opaque PNG is a photo or a flat graphic. Only a photo-like share of near-black pixels counts.
@@ -129,7 +129,7 @@ export async function imageInfo(file) {
         if (info.near_black_share >= NEAR_BLACK_WARN_SHARE && buf.length > 60 * 1024) warnings.push(nearBlackWarning(info));
       }
     } catch (e) {
-      warnings.push(`Couldn't decode the PNG: ${e.message}`);
+      warnings.push(`The PNG did not decode: ${e.message}`);
     }
   }
   if (buf.length > 1024 * 1024) warnings.push("Over 1 MB: slow to load. convert_image with max_width (2x the display width, e.g. 1200) and quality 75 to 82 makes it smaller.");

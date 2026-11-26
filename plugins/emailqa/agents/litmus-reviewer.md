@@ -86,6 +86,8 @@ Copy all the screenshots into the email folder with ONE `import_file` call that 
 
 ## 5. Return
 
+Write each `issue` and `observed` text as one short sentence in ASD-STE100 style: 25 words or fewer, active voice, no contractions. The caller copies these sentences into its report.
+
 Return only this JSON, nothing else:
 
 ```json

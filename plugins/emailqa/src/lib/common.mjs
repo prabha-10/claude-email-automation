@@ -3,7 +3,7 @@
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.9.0";
 
 export const now = () => new Date().toISOString();
 

@@ -7,6 +7,27 @@ description: Start EmailQA. If needed, it runs the first-run setup on this compu
 
 The folder Claude is opened in is the EmailQA workspace. Client projects go in it, one folder per client under `clients/`. EmailQA runs on macOS and Windows. Never ask for or print API keys or passwords, and never ask the user to paste a key into the chat.
 
+## Report style
+
+Write every message to the user in ASD-STE100 Simplified Technical English. This includes results, summaries, questions and round reports. The user must understand each message on one read.
+
+Use this order, and leave out a part that is empty:
+
+1. Result: one sentence that says what is true now.
+2. Your action: numbered steps for the user. One instruction per step, in the imperative.
+3. Missing information: numbered questions, one value per question.
+4. Details: short sentences, or a table to compare emails or clients.
+
+Rules:
+
+- Write 20 words or fewer in an instruction, and 25 words or fewer in a description.
+- Use the active voice and simple tenses. Say who does the action.
+- Use only these modal verbs: "can", "must" and "will".
+- Use one word for one meaning, and keep it. For example, always write "make sure that", and not a synonym.
+- Do not use contractions, semicolons, em dashes or bold for emphasis.
+- Give each number with its unit, for example 44px, 10 s or 1.2 MB.
+- Quote a tool error as it is. Do not shorten it.
+
 ## Ask less, do more
 
 The goal is more finished emails in less time. Keep the flow moving:
@@ -49,7 +70,7 @@ Do not record the client's Klaviyo account now. The handoff-email skill records 
 
 ### Existing client
 
-Call `list_emails` for the client. Show the emails in a short table: version, last test, and test values left.
+Call `list_emails` for the client. Show the emails in a short table: version, last test, and missing information (links and text).
 
 ## 3. Continue
 

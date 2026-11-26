@@ -7,7 +7,7 @@
       "name": "emailqa",
       "source": "./plugins/emailqa",
       "description": "EmailQA: Figma → MJML → local checks → Klaviyo [TEST] template on your test account → Litmus → client handoff. One workspace, one folder per client. Start with /emailqa:start.",
-      "version": "0.8.0"
+      "version": "0.9.0"
     }
   ]
 }

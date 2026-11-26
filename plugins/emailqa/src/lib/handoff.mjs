@@ -101,7 +101,7 @@ export function matchLinks(packed, fetched, explicit = {}) {
     const url = explicit[p.packedAs] || explicit[p.file];
     if (!url) continue;
     const f = byUrl.get(url);
-    if (!f) problems.push(`${p.packedAs}: the link given for it wasn't downloaded: ${url}`);
+    if (!f) problems.push(`${p.packedAs}: the link given for it did not download: ${url}`);
     else if (f.sha256 === p.sha256) add(p, f, "identical");
     else if (sameShape(f, p)) add(p, f, "same-size");
     else problems.push(`${p.packedAs}: the link given for it is a different image (${describe(f)}, expected ${describe(p)}): ${url}`);

@@ -3,6 +3,7 @@
 // Run: npm test (from this folder). Add --figma-install to also install and start the real Figma server.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import https from "node:https";
 import { tmpdir } from "node:os";
@@ -119,7 +120,7 @@ for (const n of ["setup_status", "install_figma_server", "prepare_figma_bridge",
   check(names.includes(n), `tool ${n} listed`);
 }
 
-for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails", "remove_unused_images", "make_solid_image"]) check(names.includes(n), `tool ${n} listed`);
+for (const n of ["plan_fixes", "find_lessons", "record_lesson", "resolve_variants", "lift_blacks", "check_emails", "remove_unused_images", "make_solid_image", "replace_test_values"]) check(names.includes(n), `tool ${n} listed`);
 
 let r = await b.call("setup_status");
 check(!r.isError && r.data.checks?.length >= 6, "setup_status runs", r.text);
@@ -127,7 +128,7 @@ check(r.data.checks?.find((c) => c.id === "figma-server")?.ok === false, "setup_
 check(r.data.checks?.find((c) => c.id === "litmus-address")?.ok === true, "setup_status: Litmus address accepted");
 
 r = await b.call("list_clients");
-check(r.isError && /isn't an EmailQA workspace yet/.test(r.text), "tools ask for create_workspace in a new folder", r.text);
+check(r.isError && /is not an EmailQA workspace yet/.test(r.text), "tools ask for create_workspace in a new folder", r.text);
 r = await b.call("create_workspace", {});
 check(!r.isError && r.data.created && r.data.workspace === realpathSync(ws) && existsSync(path.join(ws, "workspace.json")), "create_workspace with no path uses the session folder", r.text);
 check(r.data.kept_existing_files === 1 && existsSync(path.join(ws, "notes.txt")), "create_workspace keeps the files already in the folder", r.text);
@@ -139,7 +140,7 @@ check(r.isError, "create_workspace refuses Claude's config folder");
   const other = startServer("email-build.mjs", { CLAUDE_PROJECT_DIR: dirs.session });
   await other.init();
   const x = await other.call("list_clients");
-  check(x.isError && /isn't an EmailQA workspace yet/.test(x.text), "a session in another folder does not use the old workspace", x.text);
+  check(x.isError && /is not an EmailQA workspace yet/.test(x.text), "a session in another folder does not use the old workspace", x.text);
   other.stop();
   // ...but a session opened in the home folder (which can't be a workspace) falls back to it.
   const home = path.join(t, "home");
@@ -271,7 +272,8 @@ r = await b.call("update_email_record", { client: "acme-outdoors", email: "sprin
 check(!r.isError && r.data.saved === true && !("history" in r.data), "update_email_record returns a short acknowledgment", r.text);
 r = await b.call("precheck_email", { client: "acme-outdoors", email: "spring-campaign/spring-teaser", check_urls: false });
 check(!/example\.com/i.test(JSON.stringify(r.data.failed)), "recorded test link no longer fails");
-check(r.data.warnings.some((w) => /Test values still in the email/.test(w)), "test values warned while present");
+check(r.data.warnings.some((w) => /^Test links still in the email: Shop link\. .*no new Litmus round/.test(w)) && r.data.warnings.some((w) => /^Test text still in the email: Footer address\. .*before the first Litmus round/.test(w)), "test values warned while present, links and text apart", JSON.stringify(r.data.warnings));
+check(r.data.missing_info?.links?.length === 1 && r.data.missing_info?.text?.length === 1, "precheck returns the missing information by kind", JSON.stringify(r.data.missing_info));
 
 r = await b.call("preview_email", { client: "acme-outdoors", email: "spring-campaign/spring-teaser" });
 check(!r.isError && r.data.compare?.startsWith("http://127.0.0.1:"), "preview_email returns URLs", r.text);
@@ -332,12 +334,24 @@ if (!r.isError) {
   check(/^name: email-builder$/m.test(agent) && /^model: inherit$/m.test(agent) && /figma_get_selection/.test(agent), "email-builder agent is defined and keeps off the shared selection");
   const reviewer = readFileSync(path.join(root, "agents", "litmus-reviewer.md"), "utf8");
   check(/checklist\/tests\/<test id>#<anchor>/.test(reviewer) && /at most 10 seconds/.test(reviewer) && /iphone16gmailappdark/.test(reviewer) && /ONE `import_file` call/.test(reviewer), "litmus-reviewer has the tested link form, the 10 s wait limit, the dark anchors and one save call");
+  {
+    // Every skill writes its reports in the same ASD-STE100 style, and the agents write their sentences in it.
+    const styleOf = (name) => (readFileSync(path.join(root, "skills", name, "SKILL.md"), "utf8").match(/## Report style\n[\s\S]*?(?=\n## )/) || [""])[0];
+    const styles = ["start", "build-email", "test-email", "handoff-email"].map(styleOf);
+    check(styles[0].includes("ASD-STE100") && styles[0].includes("1. Result:") && styles.every((x) => x === styles[0]), "all four skills have the same STE report style");
+    check(/ASD-STE100/.test(agent) && /ASD-STE100/.test(reviewer), "both agents write their text in STE style");
+    const test = readFileSync(path.join(root, "skills", "test-email", "SKILL.md"), "utf8");
+    check(/## Missing information/.test(test) && /Never send a round for one answer/.test(test) && /replace_test_values/.test(test), "test-email has the ask-once rules for missing information");
+  }
   const listed = [...agent.matchAll(/mcp__plugin_emailqa_email-build__([a-z_]+)/g)].map((m) => m[1]);
   check(listed.length >= 10 && listed.every((n) => names.includes(n)) && listed.includes("import_file"), "email-builder loads only tools that exist, import_file included", listed.filter((n) => !names.includes(n)).join(", "));
 
   r = await b.call("set_test_values", { client: C, email: "spring-campaign/spring-launch", values: [{ label: "Shop link", value: "https://example.com/shop" }] });
   r = await b.call("set_test_values", { client: C, email: "spring-campaign/spring-launch", remove: ["https://example.com/shop"], values: [{ label: "Shop link", value: "https://example.com/?shop" }] });
   check(!r.isError && r.data.removed === 1 && r.data.test_values.length === 1 && r.data.test_values[0].value === "https://example.com/?shop", "set_test_values swaps a value in one call", r.text);
+  r = await b.call("check_emails", { client: C, group: "spring-campaign", check_urls: false });
+  const mi = r.data.missing_info || [];
+  check(mi.length === 2 && mi[0].kind === "text" && mi.find((x) => x.label === "Shop link")?.emails.length === 2 && /once/.test(r.data.missing_info_note || ""), "check_emails asks each missing value once across emails, text first", JSON.stringify(mi));
 
   const cmp = await fetch(teaser.compare).then((x) => x.text());
   check(/scrollHeight/.test(cmp), "compare frames grow to the height of the email");
@@ -534,6 +548,7 @@ b.stop();
       "/company/CLIENT1/images/c-logo.png": logo,
       "/company/CLIENT1/images/other.png": readFileSync(path.join(dirs.src, "other.png")),
       "/company/CLIENT2/images/c-logo.png": logo,
+      "/company/CLIENT1/images/c-logo.png?x=1&y=2": logo,
     };
     const imageServer = https.createServer(cert, (req, res) => {
       const body = files[req.url];
@@ -575,7 +590,7 @@ b.stop();
     check(existsSync(r.data.steps_for_handler_absolute) && r.data.images_folder === "emails/handoff-test/handoff/v1/images", "handoff: upload steps written, paths relative to the client folder", r.text);
 
     r = await h.call("apply_client_image_links", { client: C, email: E, links: [`${base}/company/CLIENT2/images/c-logo.png`] });
-    check(r.isError && /aren't from/.test(r.text), "handoff: a link from another account is refused", r.text);
+    check(r.isError && /are not from/.test(r.text), "handoff: a link from another account is refused", r.text);
     r = await h.call("apply_client_image_links", { client: C, email: E, links: [testUrl] });
     check(r.isError && /Klaviyo test account/.test(r.text), "handoff: a test-account link is refused", r.text);
     r = await h.call("apply_client_image_links", { client: C, email: E, links: [`${base}/company/CLIENT1/images/other.png`] });
@@ -601,6 +616,62 @@ b.stop();
     await h.call("compile_email", { client: C, email: E });
     r = await h.call("pack_images_for_client", { client: C, email: E });
     check(r.isError && /rebuilt after its last Litmus test/.test(r.text), "handoff: pack refuses an email rebuilt after its test", r.text);
+    {
+      // Missing information: real links after the Litmus test need no new round. A text change needs one.
+      const mjmlFile = path.join(hDir, "email.mjml");
+      const shopReal = `${base}/company/CLIENT1/images/other.png`;
+      const logoReal = `${base}/company/CLIENT1/images/c-logo.png?x=1&y=2`;
+      const pause = () => new Promise((res) => setTimeout(res, 20));
+      writeFileSync(
+        mjmlFile,
+        `<mjml><mj-body><mj-section><mj-column><mj-image src="${testUrl}" alt="Acme" width="120px" href="https://example.com/?logo" /><mj-text>Visit us at 100 Sample Street</mj-text><mj-button href="https://example.com/?shop">Shop</mj-button><mj-button href="https://example.com/?shop2">More</mj-button></mj-column></mj-section></mj-body></mjml>`
+      );
+      r = await h.call("set_test_values", {
+        client: C,
+        email: E,
+        asked: true,
+        values: [
+          { label: "Shop link", value: "https://example.com/?shop" },
+          { label: "More link", value: "https://example.com/?shop2" },
+          { label: "Logo link", value: "https://example.com/?logo" },
+          { label: "Footer address", value: "100 Sample Street" },
+        ],
+      });
+      check(!r.isError && r.data.missing_info.links.length === 3 && r.data.missing_info.text.length === 1 && !!r.data.missing_info.asked_at, "set_test_values splits missing information into links and text, and records the ask", r.text);
+      await h.call("compile_email", { client: C, email: E });
+      const tested = readFileSync(path.join(hDir, "build", "email.html"), "utf8");
+      // As upsert_template does: version 2 is published with this HTML, and a copy is kept. Then Litmus tests it.
+      mkdirSync(path.join(hDir, "qa", "v2"), { recursive: true });
+      writeFileSync(path.join(hDir, "qa", "v2", "published.html"), tested);
+      await h.call("update_email_record", { client: C, email: E, patch: { version: 2, klaviyo: { templateId: "T9", publishedSha: createHash("sha256").update(tested).digest("hex"), publishedAt: new Date().toISOString() } } });
+      await pause();
+      await h.call("update_email_record", { client: C, email: E, add_test: { litmus_email_id: "2", alerts: 0, findings: [] } });
+      await pause();
+      r = await h.call("replace_test_values", { client: C, emails: [E], answers: [{ label: "shop link", real: shopReal }, { test_value: "https://example.com/?logo", real: logoReal }, { label: "Nope", real: "https://x.test" }] });
+      const row = r.data.emails?.[0];
+      check(!r.isError && row?.replaced.length === 2 && row.new_round_needed === false && row.still_missing.links.length === 1 && row.still_missing.text.length === 1 && r.data.not_matched?.[0] === "Nope", "replace_test_values puts the real links in and names an answer that matches nothing", r.text);
+      check(readFileSync(mjmlFile, "utf8").includes('href="https://example.com/?shop2"'), "replace_test_values leaves a longer test link alone");
+      r = await h.call("replace_test_values", { client: C, emails: [E], answers: [{ label: "More link", real: "acme.test/more" }] });
+      check(/https/.test(r.data.emails?.[0]?.skipped?.[0]?.reason || ""), "replace_test_values refuses a link without https", r.text);
+      await h.call("compile_email", { client: C, email: E });
+      r = await h.call("pack_images_for_client", { client: C, email: E });
+      check(r.isError && /First run precheck_email/.test(r.text), "handoff: after real links, pack wants a pre-check of the links first", r.text);
+      await h.call("precheck_email", { client: C, email: E });
+      r = await h.call("pack_images_for_client", { client: C, email: E });
+      check(!r.isError && r.data.links_changed_after_test?.length === 2, "handoff: real links after the test need no new round", r.text);
+      const kh = startServer("klaviyo.mjs");
+      await kh.init();
+      r = await kh.call("upsert_template", { client: C, email: E });
+      check(!r.isError && r.data.action === "not_published" && r.data.version === 2 && r.data.changed_links?.length === 2, "upsert_template keeps the tested version for a link-only change", r.text);
+      r = await h.call("replace_test_values", { client: C, emails: [E], answers: [{ label: "Footer address", real: "1 Real Road, Town" }] });
+      check(!r.isError && r.data.emails?.[0]?.new_round_needed === true && /new round/.test(r.data.next), "replace_test_values: a text change after the test needs a new round", r.text);
+      await h.call("compile_email", { client: C, email: E });
+      r = await h.call("pack_images_for_client", { client: C, email: E });
+      check(r.isError && /rebuilt after its last Litmus test/.test(r.text) && /outside the link addresses/.test(r.text), "handoff: a text change after the test needs a new round", r.text);
+      r = await kh.call("upsert_template", { client: C, email: E });
+      check(r.isError && /No Klaviyo key/.test(r.text), "upsert_template publishes a text change (stops later at the missing key)", r.text);
+      kh.stop();
+    }
     h.stop();
     imageServer.close();
   }
@@ -713,7 +784,7 @@ await f.init();
 const fTools = await f.tools();
 check(fTools.length === 1 && fTools[0] === "figma_get_status", "figma launcher serves the not-installed placeholder");
 r = await f.call("figma_get_status");
-check(/isn't installed/.test(r.text), "placeholder explains how to install");
+check(/is not installed/.test(r.text), "placeholder explains how to install");
 f.stop();
 
 if (process.argv.includes("--figma-install")) {

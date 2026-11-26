@@ -198,7 +198,7 @@ Absolute positioning, overlapping elements, rotated elements and blend modes. Si
 
 ## Test values
 
-Record fake links and sample addresses for tests with `set_test_values`. The pre-check then flags them until the real values are in. Do not hide them in comments.
+Record fake links and sample addresses for tests with `set_test_values`. The pre-check then flags them until the real values are in. Do not hide them in comments. Put a test link only in `href`, never in visible text: then a real link can replace it after the Litmus test with no new round. `replace_test_values` puts the real values in.
 
 ## Links
 

@@ -21,6 +21,27 @@ Screens, labels and page snippets are in [klaviyo-screens.md](klaviyo-screens.md
 
 Every EmailQA tool takes `client` and `email`, for example `spring-sale` or `black-friday/teaser`. If the user did not name the email, use the email tested last in this session. If that is not clear, call `list_clients` and `list_emails` and ask. The paths that the tools return are relative to the client folder. The `*_absolute` fields are full paths for browser uploads.
 
+## Report style
+
+Write every message to the user in ASD-STE100 Simplified Technical English. This includes results, summaries, questions and round reports. The user must understand each message on one read.
+
+Use this order, and leave out a part that is empty:
+
+1. Result: one sentence that says what is true now.
+2. Your action: numbered steps for the user. One instruction per step, in the imperative.
+3. Missing information: numbered questions, one value per question.
+4. Details: short sentences, or a table to compare emails or clients.
+
+Rules:
+
+- Write 20 words or fewer in an instruction, and 25 words or fewer in a description.
+- Use the active voice and simple tenses. Say who does the action.
+- Use only these modal verbs: "can", "must" and "will".
+- Use one word for one meaning, and keep it. For example, always write "make sure that", and not a synonym.
+- Do not use contractions, semicolons, em dashes or bold for emphasis.
+- Give each number with its unit, for example 44px, 10 s or 1.2 MB.
+- Quote a tool error as it is. Do not shorten it.
+
 ## Rules
 
 - Never log in for the handler, type passwords, or complete "I'm not a robot" checks. If Klaviyo shows a sign-in page, ask the handler to sign in on that tab.
@@ -28,13 +49,18 @@ Every EmailQA tool takes `client` and `email`, for example `spring-sale` or `bla
 - Never click Delete, Save in Settings, anything under Private API Keys, or Klaviyo's AI chat. Never send campaigns.
 - The browser guard (a plugin hook) blocks every Klaviyo page except sign-in, API keys, Media & brand images, saved templates and the template editor. It also blocks browser scripts that click, go to another page, submit or change values. If Claude is opened in the EmailQA workspace folder, the guard is on. If it blocks a step, do not work around it: tell the user what you tried to do.
 - Never swap image links by editing HTML by hand. Only `apply_client_image_links` writes the final HTML, because it checks each image and proves that nothing else changed.
-- The final HTML is the tested HTML with only the image links changed. If anything else needs a change, fix it in the email, test it again (test-email skill), and hand it off again.
+- The final HTML is the tested HTML. Only the image links, and test links that became real links, can be different. If anything else needs a change, fix it in the email, test it again (test-email skill), and hand it off again.
 
 ## 1. Make sure that it is ready
 
 Read the email's record, `clients/<client>/emails/<email>/email.json`. `list_emails` shows its version and latest test. The latest entry in `tests` must be for the current `version`, and `last_test.open_problems` must be 0. If not, finish the test-email skill first. `pack_images_for_client` also refuses while test variants are still in `email.mjml`: the test-email skill removes them with `resolve_variants` and tests the result.
 
-If `list_emails` shows test values left in the email, list them and stop. They must be replaced first. `precheck_email` catches example.com links but not wrong copy, so the question in step 4 asks the handler to make sure that the copy is final.
+If `list_emails` shows `missing_info` for the email, finish it before you pack:
+
+- Links: if the user did not give the real links, ask for all of them in one message. Call `replace_test_values`, then `compile_email` and `precheck_email`. Do not test the email again: `pack_images_for_client` proves that only link addresses changed.
+- Text: list the values and stop. A text change after the test needs one Litmus round (test-email skill).
+
+`precheck_email` catches example.com links but not wrong copy, so the question in step 4 asks the handler to make sure that the copy is final.
 
 ## 2. Make sure that the right client account is open
 
@@ -49,7 +75,7 @@ By hand: if `client_klaviyo` is null, ask the handler for the client's account n
 
 ## 3. Pack the images
 
-Call `pack_images_for_client` with `client` and `email`. If the email was rebuilt after its last test, the tool refuses. Then test the email again first.
+Call `pack_images_for_client` with `client` and `email`. If the email was rebuilt after its last test, the tool compares the HTML with the tested HTML. Real links in place of test links are fine. For any other change, the tool refuses: then test the email again first.
 
 - `to_upload` lists the files to upload, all in `images_folder`. `images_folder_absolute` is the full path, and each file also has an `absolute_path`.
 - `already_in_client_account` lists images uploaded for earlier emails, such as logos and social icons. The tool uses them again, so you do not upload them.

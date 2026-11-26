@@ -19,7 +19,7 @@ if (existsSync(entry)) {
     });
   }
   child.on("error", (e) => {
-    process.stderr.write(`EmailQA: couldn't start the Figma server: ${e.message}\n`);
+    process.stderr.write(`EmailQA: the Figma server did not start: ${e.message}\n`);
     process.exit(1);
   });
   child.on("exit", (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
@@ -29,7 +29,7 @@ if (existsSync(entry)) {
   const server = new McpServer({ name: "figma", version: "not-installed" });
   const status = figmaRuntimeStatus();
   const message =
-    "The Figma server isn't installed on this computer yet. Run /emailqa:start: its setup calls install_figma_server " +
+    "The Figma server is not installed on this computer yet. Run /emailqa:start: its setup calls install_figma_server " +
     "(needs internet once), then start a new Claude session so the Figma tools load.";
   server.registerTool(
     "figma_get_status",

@@ -13,7 +13,28 @@ Before you style colours, logos or dark areas, read [library/client-behavior.md]
 
 Never change the Figma file. Never invent copy: take it from the design. Never use shell commands for files: use `import_file`, `image_info`, `convert_image`, `crop_image` and `remove_unused_images`, and edit `email.mjml` with the Edit or Write tool.
 
-Work from start to finish without questions. Ask only in the cases that step 1 names. Say any guess in one line in the report.
+Work from start to finish without questions. Ask only in the cases that step 1 names. Say any guess in one line in the report. Missing information (a real link, an address or a code that the design does not give) does not stop the build. Use a test value, and ask for all the missing values once, at the end of the report.
+
+## Report style
+
+Write every message to the user in ASD-STE100 Simplified Technical English. This includes results, summaries, questions and round reports. The user must understand each message on one read.
+
+Use this order, and leave out a part that is empty:
+
+1. Result: one sentence that says what is true now.
+2. Your action: numbered steps for the user. One instruction per step, in the imperative.
+3. Missing information: numbered questions, one value per question.
+4. Details: short sentences, or a table to compare emails or clients.
+
+Rules:
+
+- Write 20 words or fewer in an instruction, and 25 words or fewer in a description.
+- Use the active voice and simple tenses. Say who does the action.
+- Use only these modal verbs: "can", "must" and "will".
+- Use one word for one meaning, and keep it. For example, always write "make sure that", and not a synonym.
+- Do not use contractions, semicolons, em dashes or bold for emphasis.
+- Give each number with its unit, for example 44px, 10 s or 1.2 MB.
+- Quote a tool error as it is. Do not shorten it.
 
 ## 1. Find the frame, in the right client's file
 
@@ -55,10 +76,13 @@ For each image node (photos, kept illustrations, icons):
 
 Write `email.mjml` in the email folder, and follow [mjml-rules.md](mjml-rules.md). Reference local images as `../images/<file>`, so that the local preview works. The test-email skill hosts them later with `host_images`.
 
-Test values: if the design has no real links, footer address or similar values, use values that are clearly fake. Record each with `set_test_values` (a label and the exact value). The pre-check keeps warning until you replace them, so they cannot get into a real send. In the report, say which values are fake.
+Test values: if the design has no real links, footer address or similar values, use values that are clearly fake. Record each with `set_test_values` (a label and the exact value). These values are the email's missing information. The pre-check keeps warning until you replace them, so they cannot get into a real send.
 
 - A fake link has the form `https://example.com/?<what>`, for example `https://example.com/?shop`. The pre-check does not fetch example.com links or recorded test values, so they never fail "Link responds".
+- A test link costs nothing later. A real link can replace it after the Litmus test, with no new round.
+- If the answer comes after the Litmus test, a test text value (an address, a code) costs one round. Look for the real text first: in the design, and in the client's other emails.
 - To change a recorded value, call `set_test_values` once with `remove` (the old value) and `values` (the new one).
+- When the user gives real values, call `replace_test_values`. It edits `email.mjml` of one or more emails.
 - A design with no footer address gets the footer that [mjml-rules.md](mjml-rules.md) describes under Klaviyo.
 
 ## 6. Compile, check and preview
@@ -71,7 +95,7 @@ Test values: if the design has no real links, footer address or similar values, 
 
 ## 7. Report and iterate
 
-Report in a few lines: what you built, the fonts, anything you simplified from the design (and why), the test values, and the pre-check result. Give the `preview_email` link with `open: true`, so that the user can look too. For each requested change, edit `email.mjml`, run `compile_email`, `precheck_email` and the preview again, and tell the user to refresh.
+Report in a few lines: what you built, the fonts, anything you simplified from the design (and why), and the pre-check result. Give the `preview_email` link with `open: true`, so that the user can look too. End with "Missing information": one numbered question per test value, text values first. Then call `set_test_values` with `asked: true`. The test-email skill then does not ask again. For each requested change, edit `email.mjml`, run `compile_email`, `precheck_email` and the preview again, and tell the user to refresh.
 
 If the user asked for a build and a test, or says the email looks right, go straight on to the test-email skill.
 
@@ -88,6 +112,7 @@ If the user selects or links two or more frames, build the emails at the same ti
 5. Start at most 5 agents in one message. The Figma plugin runs one script at a time, so more agents wait for each other. When the first agents return, start the next ones.
 6. When all agents return, call `check_emails` with the list of emails and `open: true`. It compiles and pre-checks every email in one call. It also opens the `overview` page, which shows every email at 600px and 375px with a link to each compare page.
 7. Report in one table: the email, the pre-check result, the guesses, the questions for the designer and what is still wrong. Then give the `overview` link. If two agents made different choices for the same thing (a footer, a link, a size), say so and make them the same.
+8. End with "Missing information": the `missing_info` list from `check_emails`, as numbered questions. It asks each value once for all the emails, text values first. Then call `set_test_values` with `asked: true` for each email.
 
 For a change to every email, for example a new footer, edit each `email.mjml`. Then call `check_emails` once, not the three tools per email.
 

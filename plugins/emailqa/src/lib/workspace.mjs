@@ -135,7 +135,7 @@ export async function requireWorkspace() {
   const ws = await findWorkspace();
   if (!ws) {
     throw new Error(
-      `This folder (${sessionFolder()}) isn't an EmailQA workspace yet. Call create_workspace with no path to make it one (no need to ask), then continue.`
+      `This folder (${sessionFolder()}) is not an EmailQA workspace yet. Call create_workspace with no path to make it one (no need to ask), then continue.`
     );
   }
   const config = await readJson(path.join(ws, "workspace.json"));
@@ -212,7 +212,7 @@ export function checkEmailPath(email) {
 
 export function emailPathFromName(name, group) {
   const slug = slugify(name);
-  if (!slug) throw new Error(`Can't make a folder name from "${name}".`);
+  if (!slug) throw new Error(`Cannot make a folder name from "${name}".`);
   const groupParts = String(group || "")
     .replace(/\\/g, "/")
     .split("/")

@@ -1,6 +1,6 @@
 {
   "name": "emailqa-build",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Build tooling for the EmailQA plugin. Bundles src/ into dist/ so the plugin needs no npm install.",
